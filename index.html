@@ -2,259 +2,311 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>ChronoBot – Terms of Service & Privacy Policy</title>
+  <title>Chromie (ChronoBot) – Terms & Privacy</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
+    :root {
+      --bg: #020617;
+      --card: #020617;
+      --border: #1f2937;
+      --accent: #a855f7;
+      --accent-soft: rgba(168, 85, 247, 0.16);
+      --text-main: #e5e7eb;
+      --text-muted: #9ca3af;
+      --heading: #f9fafb;
+    }
+    * {
+      box-sizing: border-box;
+    }
     body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background-color: #0f172a;
-      color: #e5e7eb;
       margin: 0;
-      padding: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top left, #111827 0, #020617 45%, #000 100%);
+      color: var(--text-main);
     }
     main {
-      max-width: 800px;
+      max-width: 900px;
       margin: 0 auto;
-      padding: 2.5rem 1.5rem 3rem;
+      padding: 2.5rem 1.5rem 3.25rem;
     }
-    h1, h2, h3 {
-      color: #f9fafb;
+    header {
+      margin-bottom: 2rem;
     }
     h1 {
       font-size: 2rem;
-      margin-bottom: 0.5rem;
+      margin: 0 0 0.35rem;
+      color: var(--heading);
+    }
+    .subtitle {
+      font-size: 0.95rem;
+      color: var(--text-muted);
+    }
+    .chip-row {
+      margin-top: 0.75rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .chip {
+      border-radius: 999px;
+      padding: 0.25rem 0.7rem;
+      font-size: 0.8rem;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.8);
+      color: var(--text-muted);
+    }
+
+    section.card {
+      border-radius: 1rem;
+      border: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(15, 23, 42, 0.9), rgba(17, 24, 39, 0.98));
+      padding: 1.5rem 1.35rem 1.75rem;
+      margin-bottom: 1.4rem;
+      box-shadow: 0 18px 45px rgba(15, 23, 42, 0.8);
     }
     h2 {
-      font-size: 1.35rem;
-      margin-top: 2rem;
-      border-bottom: 1px solid #1f2937;
-      padding-bottom: 0.4rem;
+      font-size: 1.25rem;
+      margin: 0 0 0.75rem;
+      color: var(--heading);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+    h2 span.badge {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      background: var(--accent-soft);
+      color: var(--accent);
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 27, 255, 0.4);
     }
     h3 {
-      font-size: 1.05rem;
-      margin-top: 1.2rem;
+      font-size: 1rem;
+      margin: 1.1rem 0 0.45rem;
+      color: var(--heading);
     }
     p {
+      margin: 0.4rem 0;
       line-height: 1.6;
-      margin: 0.5rem 0;
+      font-size: 0.94rem;
     }
     ul {
-      margin: 0.4rem 0 0.8rem 1.2rem;
+      margin: 0.35rem 0 0.75rem 1.1rem;
+      padding-left: 0;
+      font-size: 0.94rem;
+    }
+    li {
+      margin: 0.25rem 0;
+      line-height: 1.5;
     }
     a {
       color: #a5b4fc;
+      text-decoration: none;
     }
-    small {
-      color: #9ca3af;
+    a:hover {
+      text-decoration: underline;
     }
     .meta {
-      margin-bottom: 1.5rem;
-      font-size: 0.9rem;
-      color: #9ca3af;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      margin-top: 0.35rem;
+    }
+    .meta strong {
+      font-weight: 600;
+      color: var(--text-main);
+    }
+    footer {
+      margin-top: 1.75rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+      padding-top: 0.9rem;
     }
   </style>
 </head>
 <body>
 <main>
-  <h1>ChronoBot – Terms of Service</h1>
-  <div class="meta">
-    <p><strong>Last updated:</strong> [Nov 30, 2025]</p>
-  </div>
+  <header>
+    <h1>Chromie (ChronoBot)</h1>
+    <p class="subtitle">
+      Terms of Service &amp; Privacy Summary for the Chromie Discord bot.
+    </p>
+    <div class="chip-row">
+      <div class="chip"><strong>Last updated:</strong> [Month Day, Year]</div>
+      <div class="chip">Discord utility bot &middot; countdowns &amp; reminders</div>
+    </div>
+  </header>
 
-  <p>
-    ChronoBot (“<strong>Chromie</strong>”, “<strong>the bot</strong>”, “<strong>we</strong>”, “<strong>us</strong>”) is a Discord bot
-    that provides countdowns and reminder messages for events in Discord servers.
-    By adding ChronoBot to your server or interacting with the bot in any way,
-    you (“<strong>you</strong>”, “<strong>users</strong>”, “<strong>server owners</strong>”) agree to these Terms of Service.
-  </p>
+  <!-- TERMS OF SERVICE -->
+  <section class="card" id="terms">
+    <h2>
+      Terms of Service
+      <span class="badge">Read first</span>
+    </h2>
 
-  <p>
-    ChronoBot is an independent project and is <strong>not</strong> affiliated with, endorsed by,
-    or officially connected to Discord Inc.
-  </p>
+    <p>
+      Chromie (“<strong>ChronoBot</strong>”, “<strong>the bot</strong>”, “<strong>we</strong>”) is a Discord bot
+      that provides countdowns and reminder messages for events in Discord servers.
+      By adding Chromie to your server or using its commands, you agree to these Terms of Service.
+    </p>
 
-  <h2>1. Eligibility & Acceptable Use</h2>
+    <p>
+      Chromie is an independent project and is <strong>not</strong> affiliated with or endorsed by Discord Inc.
+      You must also follow Discord’s
+      <a href="https://discord.com/terms" target="_blank" rel="noopener">Terms of Service</a>
+      and
+      <a href="https://discord.com/guidelines" target="_blank" rel="noopener">Community Guidelines</a>.
+    </p>
 
-  <p>
-    To use ChronoBot, you must comply with:
-  </p>
-  <ul>
-    <li>Discord’s <a href="https://discord.com/terms" target="_blank" rel="noopener">Terms of Service</a> and <a href="https://discord.com/guidelines" target="_blank" rel="noopener">Community Guidelines</a>, and</li>
-    <li>All applicable laws and regulations in your jurisdiction.</li>
-  </ul>
+    <h3>Acceptable Use</h3>
+    <p>You agree not to use Chromie to:</p>
+    <ul>
+      <li>Harass, threaten, or spam other users.</li>
+      <li>Plan or promote illegal activities.</li>
+      <li>Store sensitive personal information in event names or descriptions.</li>
+      <li>Abuse, disrupt, or attempt to reverse-engineer the bot or Discord’s API.</li>
+    </ul>
 
-  <p>You may not use ChronoBot to:</p>
-  <ul>
-    <li>Harass, abuse, or spam other users.</li>
-    <li>Plan, promote, or coordinate illegal activities.</li>
-    <li>Collect or store sensitive personal information in event names or descriptions.</li>
-    <li>Attempt to disrupt, reverse-engineer, or abuse the bot or Discord’s API.</li>
-  </ul>
+    <h3>Service Description</h3>
+    <p>Chromie may provide features such as:</p>
+    <ul>
+      <li>Countdowns to upcoming events in a configured channel.</li>
+      <li>Reminder messages at selected milestones (for example: 100 days, 50 days,
+          about 1 month, 14 days, 7 days, 2 days, the day before, and the day of the event).</li>
+      <li>Slash commands to add, list, update, and remove events.</li>
+    </ul>
+    <p>
+      Features may change or be removed at any time. We may temporarily or permanently
+      limit access to the bot for specific servers or users if needed.
+    </p>
 
-  <h2>2. Service Description</h2>
+    <h3>No Warranty</h3>
+    <p>
+      Chromie is provided “<strong>as is</strong>” and “<strong>as available</strong>”.
+      We do not guarantee that:
+    </p>
+    <ul>
+      <li>Reminders or countdowns will always be timely, accurate, or delivered.</li>
+      <li>The bot will be online without interruption or errors.</li>
+      <li>Data stored by the bot will be kept forever.</li>
+    </ul>
+    <p>
+      Do not rely on Chromie as your only reminder for critical, legal, medical, or financial deadlines.
+    </p>
 
-  <p>ChronoBot provides, among other features:</p>
-  <ul>
-    <li>Event countdowns and a pinned countdown message in a configured channel.</li>
-    <li>Reminder messages at selected milestones before your event (for example 100 days, 50 days, about 1 month, 14 days, 7 days, 2 days, the day before, and the day of the event).</li>
-    <li>Slash commands used to configure and manage events (such as setting an event channel, adding events, listing events, and removing events).</li>
-  </ul>
+    <h3>Limitation of Liability</h3>
+    <p>
+      To the maximum extent permitted by law, we are not liable for any indirect, incidental,
+      special, or consequential damages, or any loss of data, opportunities, or profits resulting
+      from your use of or inability to use Chromie.
+    </p>
+    <p>
+      If we are found liable despite this limitation, our total liability will not exceed the amount
+      you have paid directly for use of Chromie in the last three (3) months, or one U.S. dollar
+      (USD $1.00), whichever is greater.
+    </p>
 
-  <p>
-    Features may change, be added, or be removed at any time. We reserve the right to temporarily or permanently
-    suspend the bot, a specific feature, or access for individual servers or users.
-  </p>
+    <h3>Termination</h3>
+    <p>
+      You can stop using Chromie at any time by removing the bot from your server.
+      We may remove Chromie from a server or restrict access at our discretion,
+      including if we believe these Terms or Discord policies have been violated.
+    </p>
 
-  <h2>3. No Warranty</h2>
+    <h3>Changes to These Terms</h3>
+    <p>
+      We may update these Terms from time to time. When we do, we will update the “Last updated” date at the top.
+      If you continue to use Chromie after changes are posted, you accept the revised Terms.
+    </p>
+  </section>
 
-  <p>
-    ChronoBot is provided on an “<strong>as is</strong>” and “<strong>as available</strong>” basis.
-    We do not guarantee that:
-  </p>
-  <ul>
-    <li>Countdowns or reminders will always be accurate, timely, or delivered.</li>
-    <li>The bot will be online 24/7 or free from errors, bugs, or interruptions.</li>
-    <li>All data stored by the bot will be retained or available indefinitely.</li>
-  </ul>
+  <!-- PRIVACY POLICY -->
+  <section class="card" id="privacy">
+    <h2>
+      Privacy Policy
+      <span class="badge">Your data</span>
+    </h2>
 
-  <p>
-    You use ChronoBot at your own risk. You should not rely on ChronoBot as your only reminder system
-    for critical, legal, medical, or financial deadlines.
-  </p>
+    <p>
+      This Privacy Policy explains what information Chromie collects and how it is used.
+      By using the bot, you agree to the practices described here.
+    </p>
 
-  <h2>4. Limitation of Liability</h2>
+    <h3>Information We Receive</h3>
+    <p>Through the Discord API, Chromie may receive and store:</p>
+    <ul>
+      <li>Server (guild) IDs and names.</li>
+      <li>Channel IDs for the configured event channel.</li>
+      <li>Message IDs for pinned countdown messages.</li>
+      <li>Event details such as event names and event dates/times.</li>
+      <li>User IDs for users who link DMs to a specific server using bot commands.</li>
+    </ul>
 
-  <p>
-    To the maximum extent permitted by law, we will not be liable for any indirect, incidental, special,
-    consequential, or punitive damages, or any loss of data, events, opportunities, or profits,
-    arising from your use of or inability to use ChronoBot.
-  </p>
+    <p>
+      Chromie does <strong>not</strong> intentionally store general message content beyond what is needed to
+      process commands and operate countdown features.
+    </p>
 
-  <p>
-    If, despite the above, we are found liable for any claim related to ChronoBot, our total liability
-    will be limited to the amount (if any) you have paid directly to us for the use of ChronoBot in the
-    preceding three (3) months, or one U.S. dollar (USD $1.00), whichever is greater.
-  </p>
+    <h3>How We Use This Information</h3>
+    <p>We use the information we receive to:</p>
+    <ul>
+      <li>Provide countdowns and reminder messages for your events.</li>
+      <li>Maintain a pinned countdown message in your chosen channel.</li>
+      <li>Allow configuration via slash commands and (optionally) direct messages.</li>
+      <li>Monitor stability, debug issues, and improve the bot’s reliability.</li>
+    </ul>
 
-  <h2>5. Termination</h2>
+    <h3>Data Sharing</h3>
+    <p>
+      We do not sell your data. Limited information may be shared with:
+    </p>
+    <ul>
+      <li>Hosting or infrastructure providers, solely to operate the bot.</li>
+      <li>Authorities or other parties if required by law or to protect rights and safety.</li>
+    </ul>
 
-  <p>
-    You may stop using ChronoBot at any time by removing the bot from your server.
-    We may remove the bot from your server, restrict features, or block access at our discretion,
-    including if we believe these Terms or Discord’s policies have been violated.
-  </p>
+    <h3>Data Retention</h3>
+    <p>
+      Configuration and event data are kept as long as reasonably needed to operate Chromie for your server.
+      If you remove the bot from your server, related data may be deleted as part of routine cleanup.
+    </p>
 
-  <h2>6. Changes to These Terms</h2>
+    <h3>Children’s Privacy</h3>
+    <p>
+      Chromie is intended for use within Discord, which is for users aged 13 or older (or the minimum age
+      required in their country). We do not knowingly collect personal information from children under 13.
+    </p>
 
-  <p>
-    We may update these Terms from time to time, for example to reflect changes to the bot or to legal requirements.
-    When we do, we will update the “Last updated” date at the top of this page.
-    Continued use of ChronoBot after changes are posted means you accept the revised Terms.
-  </p>
+    <h3>Your Choices</h3>
+    <p>You can:</p>
+    <ul>
+      <li>Remove Chromie from your server at any time.</li>
+      <li>Use the bot’s commands to delete or modify specific events.</li>
+      <li>Contact us if you have questions or concerns about your data.</li>
+    </ul>
 
-  <h2>7. Contact</h2>
+    <h3>Changes to This Policy</h3>
+    <p>
+      We may update this Privacy Policy from time to time. When we do, we will update the “Last updated” date.
+      Continued use of Chromie after changes are posted means you accept the revised Policy.
+    </p>
 
-  <p>
-    If you have questions about these Terms or ChronoBot, you can contact us at:
-    <br />
-    <strong>Email:</strong> <a href="mailto:[your-email@example.com]">[your-email@example.com]</a>
-  </p>
+    <h3>Contact</h3>
+    <p>
+      If you have questions about these Terms or this Privacy Policy, you can contact the developer at:<br />
+      <strong>Email:</strong>
+      <a href="mailto:[your-email@example.com]">[your-email@example.com]</a>
+    </p>
+  </section>
 
-
-  <h1>Privacy Policy</h1>
-
-  <p>
-    This Privacy Policy explains what information ChronoBot (“Chromie”) collects and how it is used.
-    By using ChronoBot, you agree to this Policy.
-  </p>
-
-  <h2>1. Information We Collect</h2>
-
-  <h3>a) Data from Discord</h3>
-  <p>Through the Discord API, ChronoBot may receive and store:</p>
-  <ul>
-    <li>Server (guild) IDs and names.</li>
-    <li>Channel IDs for the configured event channel.</li>
-    <li>Message IDs for the pinned countdown message.</li>
-    <li>Event data, such as event names and dates/times.</li>
-    <li>User IDs for users who link their account to a server for DM-based commands.</li>
-  </ul>
-
-  <p>
-    ChronoBot does <strong>not</strong> intentionally store general message content outside of commands
-    or data needed to operate countdown and reminder features.
-  </p>
-
-  <h3>b) Logs and Operational Data</h3>
-
-  <p>
-    The hosting platform may generate logs that include technical information such as timestamps, error messages,
-    and possibly user IDs or guild IDs when errors occur. These logs are used for debugging and maintenance.
-  </p>
-
-  <h2>2. How We Use Information</h2>
-
-  <p>We use collected information to:</p>
-  <ul>
-    <li>Provide and operate countdown and reminder features.</li>
-    <li>Maintain pinned countdown messages in your configured channel.</li>
-    <li>Send milestone reminders to your server at the appropriate times.</li>
-    <li>Allow some configuration to be done via DM for linked users.</li>
-    <li>Monitor and improve stability, performance, and security of the bot.</li>
-  </ul>
-
-  <h2>3. Data Sharing</h2>
-
-  <p>
-    We do not sell your data. We may share limited information:
-  </p>
-  <ul>
-    <li>With our hosting or infrastructure providers, to run the bot.</li>
-    <li>If required to comply with applicable laws, legal requests, or to protect our rights or the rights of others.</li>
-  </ul>
-
-  <h2>4. Data Retention</h2>
-
-  <p>
-    Event and configuration data are retained as long as reasonably needed to operate ChronoBot for your server.
-    If you remove ChronoBot from your server, we may delete related data as part of routine cleanup.
-  </p>
-
-  <h2>5. Children’s Privacy</h2>
-
-  <p>
-    ChronoBot is intended for use in Discord, which is restricted to users aged 13 or older (or the minimum age
-    required in their country). We do not knowingly collect personal information from children under 13.
-  </p>
-
-  <h2>6. Your Choices</h2>
-
-  <p>You can:</p>
-  <ul>
-    <li>Remove ChronoBot from your server at any time.</li>
-    <li>Delete specific events using the bot’s commands.</li>
-    <li>Contact us if you have questions or requests related to your data.</li>
-  </ul>
-
-  <h2>7. Changes to This Privacy Policy</h2>
-
-  <p>
-    We may update this Privacy Policy periodically. When we do, we will update the “Last updated” date at the top.
-    Continued use of ChronoBot after changes are posted means you accept the revised Policy.
-  </p>
-
-  <h2>8. Contact</h2>
-
-  <p>
-    If you have questions about this Privacy Policy, you can contact us at:
-    <br />
-    <strong>Email:</strong> <a href="mailto:[nthorn330@gmail.com]">[nthorn330@gmail.com]</a>
-  </p>
-
-  <p><small>
-    This document is provided for general informational purposes only and does not constitute legal advice.
-    You should consult with a qualified attorney to review and adapt these terms for your specific situation.
-  </small></p>
+  <footer>
+    <p>
+      This page is provided for general information only and does not constitute legal advice.
+      For specific legal questions, you should consult a qualified attorney.
+    </p>
+  </footer>
 </main>
 </body>
 </html>
