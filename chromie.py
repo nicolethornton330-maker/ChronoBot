@@ -144,20 +144,20 @@ async def send_onboarding_for_guild(guild: discord.Guild):
         "I’ll keep track of the big day and send reminders along the way, so no one forgets what’s coming up.\n\n"
         "I’ll announce milestones at 100 days, 50 days, about 1 month (30 days), 14 days, 1 week, 2 days, "
         "the day before, and on the day of the event.\n\n"
-        "Goodbye forgotten events, hello Chromie!\n\n"
+        "*Goodbye forgotten events, hello Chromie!*\n\n"
         "**Here's a quick setup guide:**\n"
-        "1️⃣ Choose your events channel\n"
+        "1️⃣ *Choose your events channel*\n"
         "   • Go to the channel where you want the live countdown pinned.\n"
         "   • Run: /seteventchannel and Chromie will only pin events to that channel.\n"
-        "2️⃣ Manage your events\n"
+        "2️⃣ *Manage your events*\n"
         "   • /listevents – show all events\n"
         "   • /removeevent – remove by list number\n"
         "   • /update_countdown – manually refresh the pinned countdown\n\n"
-        "🔁  Optional: DM control\n"
+        "🔁  **Optional: DM control**\n"
         "   • In this server, run /linkserver.\n"
         "   • Then DM me: /addevent with your date, time, and name.\n\n"
-        "I’ll handle the live countdown and milestone reminders automatically once an "
-        "events channel and at least one event are set up. ✨"
+        "**I’ll handle the live countdown and milestone reminders automatically once an "
+        "events channel and at least one event are set up. ✨**"
     )
 
     sent = False
@@ -715,3 +715,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
