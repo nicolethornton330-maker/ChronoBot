@@ -22,7 +22,7 @@ UPDATE_INTERVAL_SECONDS = 60
 DEFAULT_MILESTONES = [100, 50, 30, 14, 7, 2, 1]
 
 # Where we store all data (per server)
-DATA_FILE = Path("chrono_state.json")
+DATA_FILE = Path(os.getenv("CHROMIE_DATA_PATH", "/var/data/chromie_state.json"))
 
 # Bot token – preferred: set DISCORD_BOT_TOKEN in your hosting env
 TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
@@ -150,7 +150,7 @@ async def send_onboarding_for_guild(guild: discord.Guild):
     "   • Go to the channel where you want the live countdown pinned.\n"
     "   • Run: `/seteventchannel`\n\n"
     "2️⃣ **Add your first event (MM/DD/YYYY)**\n"
-    "   • Example: `/addevent date: 04/12/2026 time: 09:00 name: Game Night🎮 `\n"
+    "   • Example: `/addevent date: 04/12/2026 time: 09:00 name: Game Night  `\n"
     "   • Format: `MM/DD/YYYY` and `HH:MM` 24-hour time (server timezone).\n\n"
     "3️⃣ **Manage your events**\n"
     "   • `/listevents` – show all events\n"
@@ -718,5 +718,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()
