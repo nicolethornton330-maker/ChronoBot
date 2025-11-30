@@ -150,7 +150,7 @@ async def send_onboarding_for_guild(guild: discord.Guild):
     "   • Go to the channel where you want the live countdown pinned.\n"
     "   • Run: `/seteventchannel`\n\n"
     "2️⃣ **Add your first event (MM/DD/YYYY)**\n"
-    "   • Example: `/addevent date: 04/12/2026 time: 09:00 name: Game Night :video_game: `\n"
+    "   • Example: `/addevent date: 04/12/2026 time: 09:00 name: Game Night🎮 `\n"
     "   • Format: `MM/DD/YYYY` and `HH:MM` 24-hour time (server timezone).\n\n"
     "3️⃣ **Manage your events**\n"
     "   • `/listevents` – show all events\n"
@@ -718,4 +718,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
