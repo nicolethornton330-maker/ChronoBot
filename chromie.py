@@ -194,12 +194,14 @@ async def send_onboarding_for_guild(guild: discord.Guild):
 async def on_ready():
     print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
-    # Sync slash commands
     try:
-        await bot.tree.sync()
-        print("Slash commands synced.")
+        synced = await bot.tree.sync()
+        print("Slash commands synced:")
+        for cmd in synced:
+            print(f" - {cmd.name}")
     except Exception as e:
         print(f"Error syncing commands: {e}")
+
 
     if not update_countdowns.is_running():
         update_countdowns.start()
@@ -799,3 +801,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
