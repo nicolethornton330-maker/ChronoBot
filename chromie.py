@@ -660,88 +660,108 @@ async def update_countdown_cmd(interaction: discord.Interaction):
     )
 
 @bot.tree.command(
-    name="remindallnow",
+    name="remindall",
     description="Drop a whimsical reminder about the next upcoming event in the events channel."
 )
 @app_commands.guild_only()
-async def remindallnow(interaction: discord.Interaction):
+async def remindall(interaction: discord.Interaction):
     guild = interaction.guild
-    assert guild is not None
 
-    guild_state = get_guild_state(guild.id)
-    sort_events(guild_state)
-
-    channel_id = guild_state.get("event_channel_id")
-    if not channel_id:
+    # Should never happen with @guild_only, but let's be safe
+    if guild is None:
         await interaction.response.send_message(
-            "I don't know which channel to use yet.\n"
-            "Run `/seteventchannel` in the channel where you want the countdown pinned.",
+            "This command can only be used in a server.",
             ephemeral=True,
         )
         return
-
-    # Find the configured events channel
-    event_channel = bot.get_channel(channel_id)
-    if not isinstance(event_channel, discord.TextChannel):
-        await interaction.response.send_message(
-            "The configured events channel is missing or not a text channel anymore.",
-            ephemeral=True,
-        )
-        return
-
-    # Find the next upcoming event (not already passed)
-    upcoming = None
-    for ev in guild_state.get("events", []):
-        dt = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
-        desc, days_left, passed = compute_time_left(dt)
-        if not passed and days_left >= 0:
-            upcoming = (ev, desc)
-            break
-
-    if not upcoming:
-        await interaction.response.send_message(
-            "There are no upcoming events to remind everyone about.",
-            ephemeral=True,
-        )
-        return
-
-    ev, time_desc = upcoming
-
-    # Build a fun reminder line
-    line_template = random.choice(REMINDER_LINES)
-    # This will ping everyone in the channel (if the bot has permission to use @everyone)
-    ping = "@everyone"
-
-    text = line_template.format(
-        ping=ping,
-        name=ev["name"],
-        time_left=time_desc,
-    )
 
     try:
-        # Send the reminder in the events channel
-        await event_channel.send(text)
-    except discord.Forbidden:
-        # Bot can't send messages or can't mention everyone
-        await interaction.response.send_message(
-            f"🚫 I couldn't send a reminder in {event_channel.mention}. "
-            "Check my **Send Messages** and **Mention Everyone** permissions.",
+        guild_state = get_guild_state(guild.id)
+        sort_events(guild_state)
+
+        channel_id = guild_state.get("event_channel_id")
+        if not channel_id:
+            await interaction.response.send_message(
+                "I don't know which channel to use yet.\n"
+                "Run `/seteventchannel` in the channel where you want the countdown pinned.",
+                ephemeral=True,
+            )
+            return
+
+        # Find the configured events channel
+        event_channel = bot.get_channel(channel_id)
+        if not isinstance(event_channel, discord.TextChannel):
+            await interaction.response.send_message(
+                "The configured events channel is missing or not a text channel anymore.",
+                ephemeral=True,
+            )
+            return
+
+        # Find the next upcoming event (not already passed)
+        upcoming = None
+        for ev in guild_state.get("events", []):
+            dt = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
+            desc, days_left, passed = compute_time_left(dt)
+            if not passed and days_left >= 0:
+                upcoming = (ev, desc)
+                break
+
+        if not upcoming:
+            await interaction.response.send_message(
+                "There are no upcoming events to remind everyone about.",
+                ephemeral=True,
+            )
+            return
+
+        ev, time_desc = upcoming
+
+        # Build a fun reminder line
+        line_template = random.choice(REMINDER_LINES)
+        ping = "@everyone"  # requires Mention Everyone permission in that channel
+
+        text = line_template.format(
+            ping=ping,
+            name=ev["name"],
+            time_left=time_desc,
+        )
+
+        # Defer so Discord doesn't time out while we send
+        await interaction.response.defer(ephemeral=True)
+
+        # Try to send the message in the events channel
+        try:
+            await event_channel.send(text)
+        except discord.Forbidden:
+            # Missing Send Messages or Mention Everyone
+            await interaction.followup.send(
+                f"🚫 I couldn't send a reminder in {event_channel.mention}.\n"
+                "Check that I have **Send Messages** and (if using @everyone) **Mention Everyone** "
+                "permissions in that channel.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException as e:
+            await interaction.followup.send(
+                f"⚠️ I tried to send a reminder, but Discord returned an error: `{e}`",
+                ephemeral=True,
+            )
+            return
+
+        # Success
+        await interaction.followup.send(
+            f"✅ Sent a reminder for **{ev['name']}** in {event_channel.mention}.",
             ephemeral=True,
         )
-        return
-    except discord.HTTPException as e:
-        await interaction.response.send_message(
-            f"⚠️ I tried to send a reminder, but Discord returned an error: `{e}`",
-            ephemeral=True,
-        )
-        return
 
-    # Let the command user know it was sent
-    await interaction.response.send_message(
-        f"✅ Sent a reminder for **{ev['name']}** in {event_channel.mention}.",
-        ephemeral=True,
-    )
-
+    except Exception as e:
+        # Last-resort safety net so Discord never sees "application did not respond"
+        print("Error in /remindall:", repr(e))
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "⚠️ Something went wrong while sending that reminder. "
+                "An admin might need to check the bot logs.",
+                ephemeral=True,
+            )
 
 @bot.tree.command(name="resendsetup", description="Resend the onboarding/setup message.")
 @app_commands.checks.has_permissions(manage_guild=True)
