@@ -244,7 +244,7 @@ async def send_onboarding_for_guild(guild: discord.Guild):
 
     # Mark as welcomed after the first attempt
     guild_state["welcomed"] = True
-    save_state(
+    save_state()
 
 @bot.event
 async def on_ready():
@@ -1605,6 +1605,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
