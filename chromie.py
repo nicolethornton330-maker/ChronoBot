@@ -9,9 +9,6 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 
-VERSION = "ChronoBot v3.0 (2025-12-12)"
-print("BOOTING:", VERSION)
-
 # ==========================
 # CONFIG
 # ==========================
@@ -35,6 +32,12 @@ TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 #     TOKEN = "YOUR_BOT_TOKEN_HERE"
 
 EMBED_COLOR = discord.Color.from_rgb(140, 82, 255)  # ChronoBot purple
+
+DEV_GUILD_ID = int(os.getenv("DEV_GUILD_ID", "0") or 0)
+
+CLEANUP_GLOBAL_COMMANDS = os.getenv("CLEANUP_GLOBAL_COMMANDS", "0") == "1"
+CLEANUP_GUILD_COMMANDS  = os.getenv("CLEANUP_GUILD_COMMANDS", "0") == "1"
+
 
 # ==========================
 # STATE HANDLING
@@ -115,9 +118,34 @@ def get_user_links():
 
 
 def sort_events(guild_state: dict):
-    """Sort events soonest → farthest based on timestamp."""
-    events = guild_state.get("events", [])
-    events.sort(key=lambda ev: ev.get("timestamp", 0))
+    """Sort events for display.
+
+    Default behavior: soonest → farthest by timestamp.
+    If any event has a manual `order` set (via /reorder), we honor that ordering
+    and use timestamp as a tie-breaker.
+    """
+    events = guild_state.get("events", []) or []
+
+    has_manual = any(isinstance(ev.get("order"), int) for ev in events)
+
+    if has_manual:
+        # Ensure every event has an integer order; append missing ones after the current max,
+        # in timestamp order, so we don't lose older data when /reorder is introduced.
+        max_order = -1
+        for ev in events:
+            if isinstance(ev.get("order"), int) and ev["order"] > max_order:
+                max_order = ev["order"]
+
+        missing = [ev for ev in events if not isinstance(ev.get("order"), int)]
+        missing.sort(key=lambda ev: ev.get("timestamp", 0))
+        for ev in missing:
+            max_order += 1
+            ev["order"] = max_order
+
+        events.sort(key=lambda ev: (ev.get("order", 10**9), ev.get("timestamp", 0)))
+    else:
+        events.sort(key=lambda ev: ev.get("timestamp", 0))
+
     guild_state["events"] = events
 
 
@@ -173,29 +201,25 @@ async def send_onboarding_for_guild(guild: discord.Guild):
     setup_message = (
     f"Hi {contact_user.mention if contact_user else ''}! "
     f"Thanks for adding **ChronoBot** to **{guild.name}** 🕒💕\n\n"
-    "I’m Chromie, your server’s friendly countdown bot for all your upcoming events! "
-    "I’ll keep track of the big day and send reminders along the way, so no one forgets what’s coming up.\n\n"
-    "I’ll announce milestones at **100 days, 50 days, about 1 month (30 days), 14 days, 1 week, 2 days, "
-    "the day before, and on the day of the event**.\n\n"
-    "Goodbye forgotten events, hello Chromie-powered hype.\n\n"
-    "**Here’s a quick setup guide:**\n\n"
-    "1️⃣ **Choose your events channel**\n"
-    "   • Go to the channel where you want the live countdown pinned.\n"
-    "   • Run: `/seteventchannel`\n\n"
-    "2️⃣ **Add your first event (MM/DD/YYYY)**\n"
-    "   • Example: `/addevent date: 04/12/2026 time: 09:00 name: Game Night  `\n"
-    "   • Format: `MM/DD/YYYY` and `HH:MM` 24-hour time (server timezone).\n\n"
-    "3️⃣ **Manage your events**\n"
-    "   • `/listevents` – show all events\n"
-    "   • `/removeevent` – remove by list number\n"
-    "   • `/update_countdown` – refresh the pinned countdown\n\n"
+    "I’m Chromie, your server’s friendly countdown bot for upcoming events. "
+    "I’ll keep a live pinned countdown and send milestone reminders so humans can forget things safely.\n\n"
+    "Default milestones: **100, 50, 30, 14, 7, 2, 1, and 0 days** before the event.\n\n"
+    "**Quick start**\n"
+    "1️⃣ In your events channel: `/seteventchannel`\n"
+    "2️⃣ Add an event: `/addevent date: 04/12/2026 time: 09:00 name: Game Night 🎲`\n\n"
+    "**Everyday commands**\n"
+    "• `/listevents` – list events\n"
+    "• `/editevent` – edit an event\n"
+    "• `/dupeevent` – copy an event (great for recurring events)\n"
+    "• `/reorder` – move an event to a new position\n"
+    "• `/seteventowner` – assign an owner (I’ll DM them on milestones)\n"
+    "• `/removeevent` – delete an event\n\n"
+    "Type `/chronohelp` any time for the full command guide (milestones, silence, roles, maintenance, etc.).\n\n"
     "🔁 **Optional: DM control**\n"
-    "   • In this server, run `/linkserver`.\n"
-    "   • Then DM me: `/addevent` with your date, time, and name.\n\n"
-    "I’ll handle the live countdown and milestone reminders automatically once an "
-    "events channel and at least one event are set up. ✨"
-    )
-
+    "• In this server, run `/linkserver` (Manage Server required).\n"
+    "• Then DM me: `/addevent` with your date, time, and name.\n\n"
+    "Goodbye forgotten events, hello ChronoBot-powered hype. ✨"
+)
 
     sent = False
     if contact_user:
@@ -226,29 +250,48 @@ async def send_onboarding_for_guild(guild: discord.Guild):
     guild_state["welcomed"] = True
     save_state()
 
-CLEANUP_GLOBAL_COMMANDS = os.getenv("CLEANUP_GLOBAL_COMMANDS", "0") == "1"
-DEV_GUILD_ID = int(os.getenv("DEV_GUILD_ID", "0") or 0)
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user} ({bot.user.id})")
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
 
-    # --- ONE-TIME: delete ALL global commands ---
-    if CLEANUP_GLOBAL_COMMANDS:
-        bot.tree.clear_commands(guild=None)   # clears local view of global commands
-        await bot.tree.sync()                 # pushes empty -> deletes global commands remotely
-        print("🧹 Deleted GLOBAL slash commands. Turn CLEANUP_GLOBAL_COMMANDS off and redeploy.")
-        return
+    try:
+        # -------------------------
+        # ONE-TIME CLEANUPS
+        # -------------------------
+        if CLEANUP_GLOBAL_COMMANDS:
+            bot.tree.clear_commands(guild=None)
+            await bot.tree.sync()
+            print("🧹 Deleted GLOBAL commands. Turn CLEANUP_GLOBAL_COMMANDS off and redeploy.")
+            return
 
-    # --- Normal dev behavior: guild sync (instant) ---
-    if DEV_GUILD_ID:
-        guild = discord.Object(id=DEV_GUILD_ID)
-        bot.tree.copy_global_to(guild=guild)
-        await bot.tree.sync(guild=guild)
-        print(f"✅ Synced to guild {DEV_GUILD_ID}")
-    else:
-        await bot.tree.sync()
-        print("✅ Synced globally (may take time)")
+        if CLEANUP_GUILD_COMMANDS and DEV_GUILD_ID:
+            guild_obj = discord.Object(id=DEV_GUILD_ID)
+            bot.tree.clear_commands(guild=guild_obj)
+            await bot.tree.sync(guild=guild_obj)
+            print(f"🧹 Deleted GUILD commands for {DEV_GUILD_ID}. Turn CLEANUP_GUILD_COMMANDS off and redeploy.")
+            return
+
+        # -------------------------
+        # NORMAL SYNC (pick ONE)
+        # -------------------------
+        if DEV_GUILD_ID:
+            # Dev mode: instant commands in your server
+            guild_obj = discord.Object(id=DEV_GUILD_ID)
+            await bot.tree.sync(guild=guild_obj)
+            print(f"✅ Synced commands to DEV guild {DEV_GUILD_ID} (instant).")
+        else:
+            # Prod mode: global commands (can take time to appear)
+            await bot.tree.sync()
+            print("✅ Synced commands globally.")
+
+    except Exception as e:
+        print(f"Error syncing commands: {e}")
+
+    if not update_countdowns.is_running():
+        update_countdowns.start()
+
+
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
@@ -426,13 +469,30 @@ async def update_countdowns():
                 continue
 
             if days_left in milestones and days_left not in announced:
-                text = build_milestone_text(ev["name"], days_left)
+                base_text = build_milestone_text(ev["name"], days_left)
 
+                mentions: List[str] = []
                 role = get_guild_mention_role(channel.guild, guild_state)
                 if role:
-                    text = f"{role.mention} {text}"
+                    mentions.append(role.mention)
+
+                owner_id = ev.get("owner_id")
+                if owner_id:
+                    mentions.append(f"<@{int(owner_id)}>")
+
+                text = f"{' '.join(mentions)} {base_text}".strip() if mentions else base_text
 
                 await channel.send(text)
+
+                # DM the owner as well (best-effort)
+                if owner_id:
+                    try:
+                        owner_user = await bot.fetch_user(int(owner_id))
+                        await owner_user.send(
+                            f"🕒 **ChronoBot reminder** for **{channel.guild.name}**\n{base_text}"
+                        )
+                    except Exception:
+                        pass
 
                 announced.append(days_left)
                 ev["announced_milestones"] = announced
@@ -729,23 +789,35 @@ async def resendsetup(interaction: discord.Interaction):
 async def chronohelp(interaction: discord.Interaction):
     text = (
         "**ChronoBot – Setup & Commands**\n\n"
-        "All slash command responses are ephemeral, so only you see them.\n\n"
-        "1️⃣ Pick your events channel (in a server):\n"
-        "   • Go to the channel you want the pinned countdown in.\n"
-        "   • Run: `/seteventchannel`\n\n"
-        "2️⃣ Add an event (MM/DD/YYYY):\n"
-        "   • Example: `/addevent date: 04/12/2026 time: 09:00 name: Couples Retreat 💕`\n"
-        "   • Format: `MM/DD/YYYY` and 24-hour `HH:MM` (server timezone).\n\n"
-        "3️⃣ Manage events (in a server):\n"
-        "   • `/listevents` – show all events (soonest → farthest)\n"
-        "   • `/removeevent index: <number>` – remove by list number\n"
-        "   • `/update_countdown` – force-refresh the pinned countdown\n\n"
-        "4️⃣ Optional: DM control:\n"
-        "   • In your server, run `/linkserver` (requires Manage Server).\n"
-        "   • Then DM me `/addevent` with your event details.\n\n"
-        "5️⃣ Onboarding:\n"
-        "   • `/resendsetup` – resend the setup guide to the server owner.\n\n"
-        "I’ll keep the pinned message updated and announce milestone reminders automatically. ✨"
+        "All slash command responses are ephemeral (only you see them).\n\n"
+        "**Setup**\n"
+        "• `/seteventchannel` – pick the channel where the pinned countdown lives\n"
+        "• `/addevent` – add an event (MM/DD/YYYY + 24-hour HH:MM)\n\n"
+        "**Browse**\n"
+        "• `/listevents` – list events\n"
+        "• `/nextevent` – show the next upcoming event\n"
+        "• `/eventinfo index:` – details for one event\n\n"
+        "**Edit & organize**\n"
+        "• `/editevent index:` – edit name/date/time\n"
+        "• `/dupeevent index: date:` – duplicate an event (optional time/name)\n"
+        "• `/reorder index: position:` – move an event in the list\n"
+        "• `/removeevent index:` – delete an event\n\n"
+        "**Milestones & notifications**\n"
+        "• `/setmilestones index:` – set custom milestone days\n"
+        "• `/resetmilestones index:` – restore default milestones\n"
+        "• `/silence index:` – stop reminders for an event (keeps it listed)\n"
+        "• `/seteventowner index: user:` – assign an owner (they get milestone DMs)\n"
+        "• `/cleareventowner index:` – remove the owner\n"
+        "• `/setmentionrole role:` – @mention a role on milestone posts\n"
+        "• `/clearmentionrole` – stop role mentions\n\n"
+        "**Maintenance**\n"
+        "• `/archivepast` – remove past events\n"
+        "• `/resetchannel` – clear the configured channel\n"
+        "• `/healthcheck` – show config + permission diagnostics\n"
+        "• `/purgeevents confirm: YES` – delete all events for this server\n\n"
+        "**Optional: DM control**\n"
+        "• `/linkserver` – link your DMs to this server (Manage Server required)\n"
+        "• Then DM me `/addevent` to add events remotely\n"
     )
     await interaction.response.send_message(text, ephemeral=True)
 
@@ -854,6 +926,9 @@ async def eventinfo(interaction: discord.Interaction, index: int):
 
     embed = discord.Embed(title="Event Info", color=EMBED_COLOR)
     embed.add_field(name="Name", value=ev["name"], inline=False)
+    owner_id = ev.get("owner_id")
+    if owner_id:
+        embed.add_field(name="Owner", value=f"<@{int(owner_id)}>", inline=False)
     embed.add_field(name="When", value=dt.strftime("%B %d, %Y at %I:%M %p %Z"), inline=False)
     embed.add_field(name="Status", value=("✅ started/passed" if passed else f"⏳ {desc} remaining"), inline=False)
     embed.add_field(name="Milestones", value=", ".join(str(m) for m in milestones), inline=False)
@@ -1272,6 +1347,254 @@ async def searchevents(interaction: discord.Interaction, query: str):
 
     await interaction.response.send_message("\n".join(matches), ephemeral=True)
 
+
+
+@bot.tree.command(name="dupeevent", description="Duplicate an existing event with a new date/time.")
+@app_commands.describe(
+    index="Event number from /listevents",
+    date="New date in MM/DD/YYYY format",
+    time="(Optional) New time in HH:MM (24-hour). Defaults to the original time.",
+    name="(Optional) New name. Defaults to the original name.",
+)
+async def dupeevent(
+    interaction: discord.Interaction,
+    index: int,
+    date: str,
+    time: Optional[str] = None,
+    name: Optional[str] = None,
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/dupeevent` inside a server (not in DMs).", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    perms = interaction.user.guild_permissions
+    if not (perms.manage_guild or perms.administrator):
+        await interaction.response.send_message(
+            "You need **Manage Server** (or **Administrator**) to duplicate events.",
+            ephemeral=True,
+        )
+        return
+
+    guild_state = get_guild_state(guild.id)
+    sort_events(guild_state)
+    events = guild_state.get("events", []) or []
+    if not events:
+        await interaction.response.send_message("No events to duplicate yet. Add one with `/addevent`.", ephemeral=True)
+        return
+
+    if index < 1 or index > len(events):
+        await interaction.response.send_message(
+            f"Invalid index. Use `/listevents` and pick a number between 1 and {len(events)}.",
+            ephemeral=True,
+        )
+        return
+
+    src = events[index - 1]
+    tz = get_guild_tz(guild_state)
+    src_dt = datetime.fromtimestamp(int(src["timestamp"]), tz=tz)
+
+    effective_time = (time or src_dt.strftime("%H:%M")).strip()
+    new_name = (name or src.get("name", "Untitled Event")).strip()
+
+    try:
+        dt = datetime.strptime(f"{date} {effective_time}", "%m/%d/%Y %H:%M")
+    except ValueError:
+        await interaction.response.send_message(
+            "I couldn't understand that date/time.\n"
+            "Use something like: `date: 04/12/2026` and `time: 09:00` (MM/DD/YYYY + 24-hour HH:MM).",
+            ephemeral=True,
+        )
+        return
+
+    dt = dt.replace(tzinfo=tz)
+
+    new_event = {
+        "name": new_name,
+        "timestamp": int(dt.timestamp()),
+        "milestones": list(src.get("milestones", DEFAULT_MILESTONES)),
+        "announced_milestones": [],
+    }
+
+    # Carry over useful per-event settings
+    if src.get("silenced"):
+        new_event["silenced"] = True
+    if src.get("owner_id"):
+        new_event["owner_id"] = int(src["owner_id"])
+
+    # Insert right after the source event in the current display order
+    events.insert(index, new_event)
+
+    # If manual ordering is in play, keep it stable by reindexing orders
+    if any(isinstance(ev.get("order"), int) for ev in events):
+        for i, ev in enumerate(events):
+            ev["order"] = i
+
+    guild_state["events"] = events
+    sort_events(guild_state)
+    save_state()
+
+    # Rebuild pinned message
+    channel_id = guild_state.get("event_channel_id")
+    channel = bot.get_channel(channel_id) if channel_id else None
+    if isinstance(channel, discord.TextChannel):
+        await rebuild_pinned_message(guild.id, channel, guild_state)
+
+    await interaction.response.send_message(
+        f"✅ Duplicated **{src.get('name','(event)')}** → **{new_name}** on "
+        f"{dt.strftime('%B %d, %Y at %I:%M %p %Z')}.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="reorder", description="Move an event to a new position in the list.")
+@app_commands.describe(
+    index="Event number from /listevents",
+    position="New position (1 = top)",
+)
+async def reorder(interaction: discord.Interaction, index: int, position: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/reorder` inside a server (not in DMs).", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    perms = interaction.user.guild_permissions
+    if not (perms.manage_guild or perms.administrator):
+        await interaction.response.send_message(
+            "You need **Manage Server** (or **Administrator**) to reorder events.",
+            ephemeral=True,
+        )
+        return
+
+    guild_state = get_guild_state(guild.id)
+    sort_events(guild_state)
+    events = guild_state.get("events", []) or []
+    if not events:
+        await interaction.response.send_message("No events to reorder yet. Add one with `/addevent`.", ephemeral=True)
+        return
+
+    if index < 1 or index > len(events):
+        await interaction.response.send_message(
+            f"Invalid index. Use `/listevents` and pick a number between 1 and {len(events)}.",
+            ephemeral=True,
+        )
+        return
+
+    if position < 1:
+        position = 1
+    if position > len(events):
+        position = len(events)
+
+    ev = events.pop(index - 1)
+    events.insert(position - 1, ev)
+
+    # Persist manual ordering
+    for i, e in enumerate(events):
+        e["order"] = i
+
+    guild_state["events"] = events
+    save_state()
+
+    # Rebuild pinned message
+    channel_id = guild_state.get("event_channel_id")
+    channel = bot.get_channel(channel_id) if channel_id else None
+    if isinstance(channel, discord.TextChannel):
+        await rebuild_pinned_message(guild.id, channel, guild_state)
+
+    await interaction.response.send_message(
+        f"✅ Moved **{ev.get('name','(event)')}** to position **{position}**.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="seteventowner", description="Assign an owner to an event (they'll get milestone DMs).")
+@app_commands.describe(
+    index="Event number from /listevents",
+    user="User to assign as owner",
+)
+async def seteventowner(interaction: discord.Interaction, index: int, user: discord.Member):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/seteventowner` inside a server (not in DMs).", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    perms = interaction.user.guild_permissions
+    if not (perms.manage_guild or perms.administrator):
+        await interaction.response.send_message(
+            "You need **Manage Server** (or **Administrator**) to set event owners.",
+            ephemeral=True,
+        )
+        return
+
+    guild_state = get_guild_state(guild.id)
+    sort_events(guild_state)
+    events = guild_state.get("events", []) or []
+    if not events:
+        await interaction.response.send_message("No events yet. Add one with `/addevent`.", ephemeral=True)
+        return
+
+    if index < 1 or index > len(events):
+        await interaction.response.send_message(
+            f"Invalid index. Use `/listevents` and pick a number between 1 and {len(events)}.",
+            ephemeral=True,
+        )
+        return
+
+    ev = events[index - 1]
+    ev["owner_id"] = int(user.id)
+    save_state()
+
+    await interaction.response.send_message(
+        f"✅ Set owner for **{ev.get('name','(event)')}** to {user.mention}. "
+        f"I'll DM them when milestones trigger.",
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="cleareventowner", description="Remove the assigned owner from an event.")
+@app_commands.describe(index="Event number from /listevents")
+async def cleareventowner(interaction: discord.Interaction, index: int):
+    if interaction.guild is None:
+        await interaction.response.send_message("Use `/cleareventowner` inside a server (not in DMs).", ephemeral=True)
+        return
+
+    guild = interaction.guild
+    perms = interaction.user.guild_permissions
+    if not (perms.manage_guild or perms.administrator):
+        await interaction.response.send_message(
+            "You need **Manage Server** (or **Administrator**) to clear event owners.",
+            ephemeral=True,
+        )
+        return
+
+    guild_state = get_guild_state(guild.id)
+    sort_events(guild_state)
+    events = guild_state.get("events", []) or []
+    if not events:
+        await interaction.response.send_message("No events yet. Add one with `/addevent`.", ephemeral=True)
+        return
+
+    if index < 1 or index > len(events):
+        await interaction.response.send_message(
+            f"Invalid index. Use `/listevents` and pick a number between 1 and {len(events)}.",
+            ephemeral=True,
+        )
+        return
+
+    ev = events[index - 1]
+    if "owner_id" in ev:
+        del ev["owner_id"]
+        save_state()
+        await interaction.response.send_message(
+            f"✅ Cleared owner for **{ev.get('name','(event)')}**.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message(
+            f"That event doesn't have an owner set. Use `/seteventowner` to assign one.",
+            ephemeral=True,
+        )
+
 # ==========================
 # RUN
 # ==========================
@@ -1287,5 +1610,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
