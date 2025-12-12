@@ -198,28 +198,33 @@ async def send_onboarding_for_guild(guild: discord.Guild):
         return
 
     contact_user = guild.owner or (await bot.fetch_user(guild.owner_id))
-    setup_message = (
-    f"Hi {contact_user.mention if contact_user else ''}! "
-    f"Thanks for adding **ChronoBot** to **{guild.name}** 🕒💕\n\n"
-    "I’m Chromie, your server’s friendly countdown bot for upcoming events. "
-    "I’ll keep a live pinned countdown and send milestone reminders so humans can forget things safely.\n\n"
-    "Default milestones: **100, 50, 30, 14, 7, 2, 1, and 0 days** before the event.\n\n"
-    "**Quick start**\n"
-    "1️⃣ In your events channel: `/seteventchannel`\n"
-    "2️⃣ Add an event: `/addevent date: 04/12/2026 time: 09:00 name: Game Night 🎲`\n\n"
-    "**Everyday commands**\n"
-    "• `/listevents` – list events\n"
-    "• `/editevent` – edit an event\n"
-    "• `/dupeevent` – copy an event (great for recurring events)\n"
-    "• `/reorder` – move an event to a new position\n"
-    "• `/seteventowner` – assign an owner (I’ll DM them on milestones)\n"
-    "• `/removeevent` – delete an event\n\n"
-    "Type `/chronohelp` any time for the full command guide (milestones, silence, roles, maintenance, etc.).\n\n"
+setup_message = (
+    f"Hey {contact_user.mention if contact_user else ''}! Thanks for inviting **ChronoBot** to **{guild.name}** 🕒✨\n\n"
+    "I’m **Chromie** — your server’s upbeat countdown gremlin. I pin a tidy countdown list and nudge your humans with milestone reminders, "
+    "so important dates don’t get lost in the scroll.\n\n"
+    f"⏳ **Default milestones:** {', '.join(str(x) for x in DEFAULT_MILESTONES)} days before the event.\n"
+    "You can customize milestones per event any time.\n\n"
+    "**⚡ Quick start (2 buttons, zero drama):**\n"
+    "1) Go to your chosen events channel and run: `/seteventchannel`\n"
+    "2) Add your first event: `/addevent date: 04/12/2026 time: 09:00 name: Game Night 🎲`\n\n"
+    "**🧭 Handy commands you’ll use a lot:**\n"
+    "• `/chronohelp` – full command guide (everything I can do)\n"
+    "• `/nextevent` – show the next upcoming event\n"
+    "• `/eventinfo index:` – details for one event\n"
+    "• `/editevent` / `/dupeevent` / `/reorder` – tweak, copy, and organize your list\n"
+    "• `/setmilestones` / `/silence` – tune reminders (or hush me for one event)\n"
+    "• `/seteventowner` – pick an owner and I’ll DM them on milestones\n"
+    "• `/settimezone` – set your server timezone (ex: America/Chicago)\n\n"
+    "**🧰 Admin safety tools (because servers are chaos):**\n"
+    "• `/healthcheck` – tells you what I’m configured for and what permissions I’m missing\n"
+    "• `/archivepast` – clears past events\n"
+    "• `/resetchannel` – reset the pinned channel setup\n\n"
     "🔁 **Optional: DM control**\n"
-    "• In this server, run `/linkserver` (Manage Server required).\n"
-    "• Then DM me: `/addevent` with your date, time, and name.\n\n"
-    "Goodbye forgotten events, hello ChronoBot-powered hype. ✨"
+    "• In this server, run `/linkserver` (Manage Server required)\n"
+    "• Then DM me: `/addevent` to add events from anywhere\n\n"
+    "Alright. I’ll be over here, quietly keeping time like a tiny purple lighthouse. 💜"
 )
+
 
     sent = False
     if contact_user:
@@ -1610,3 +1615,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
