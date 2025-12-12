@@ -188,7 +188,6 @@ intents = discord.Intents.default()
 # Slash commands do NOT require message_content, but having it on is fine.
 bot = commands.Bot(command_prefix="None", intents=intents)
 
-
 async def send_onboarding_for_guild(guild: discord.Guild):
     """Send the onboarding/setup message for a guild, and mark it welcomed once."""
     guild_state = get_guild_state(guild.id)
@@ -198,63 +197,54 @@ async def send_onboarding_for_guild(guild: discord.Guild):
         return
 
     contact_user = guild.owner or (await bot.fetch_user(guild.owner_id))
-setup_message = (
-    f"Hey {contact_user.mention if contact_user else ''}! Thanks for inviting **ChronoBot** to **{guild.name}** 🕒✨\n\n"
-    "I’m **Chromie** — your server’s upbeat countdown gremlin. I pin a tidy countdown list and nudge your humans with milestone reminders, "
-    "so important dates don’t get lost in the scroll.\n\n"
-    f"⏳ **Default milestones:** {', '.join(str(x) for x in DEFAULT_MILESTONES)} days before the event.\n"
-    "You can customize milestones per event any time.\n\n"
-    "**⚡ Quick start (2 buttons, zero drama):**\n"
-    "1) Go to your chosen events channel and run: `/seteventchannel`\n"
-    "2) Add your first event: `/addevent date: 04/12/2026 time: 09:00 name: Game Night 🎲`\n\n"
-    "**🧭 Handy commands you’ll use a lot:**\n"
-    "• `/chronohelp` – full command guide (everything I can do)\n"
-    "• `/nextevent` – show the next upcoming event\n"
-    "• `/eventinfo index:` – details for one event\n"
-    "• `/editevent` / `/dupeevent` / `/reorder` – tweak, copy, and organize your list\n"
-    "• `/setmilestones` / `/silence` – tune reminders (or hush me for one event)\n"
-    "• `/seteventowner` – pick an owner and I’ll DM them on milestones\n"
-    "• `/settimezone` – set your server timezone (ex: America/Chicago)\n\n"
-    "**🧰 Admin safety tools (because servers are chaos):**\n"
-    "• `/healthcheck` – tells you what I’m configured for and what permissions I’m missing\n"
-    "• `/archivepast` – clears past events\n"
-    "• `/resetchannel` – reset the pinned channel setup\n\n"
-    "🔁 **Optional: DM control**\n"
-    "• In this server, run `/linkserver` (Manage Server required)\n"
-    "• Then DM me: `/addevent` to add events from anywhere\n\n"
-    "Alright. I’ll be over here, quietly keeping time like a tiny purple lighthouse. 💜"
-)
+    mention = contact_user.mention if contact_user else ""
+    milestone_str = ", ".join(str(x) for x in DEFAULT_MILESTONES)
 
+    setup_message = (
+        f"Hey {mention}! Thanks for inviting **ChronoBot** to **{guild.name}** 🕒✨\n\n"
+        "I’m **Chromie** — your server’s confident little timekeeper. I pin a clean countdown list and I nudge people at the right moments. "
+        "It’s like a calendar… but with better vibes.\n\n"
+        f"⏳ **Default milestones:** {milestone_str} days before the event (including **0** for day-of).\n\n"
+        "**⚡ Quick start (two commands, instant order):**\n"
+        "1) In your events channel: `/seteventchannel`\n"
+        "2) Add your first event: `/addevent date: 04/12/2026 time: 09:00 name: Game Night 🎲`\n\n"
+        "**🧰 The power tools you just unlocked:**\n"
+        "• `/editevent` – tweak name/date/time without re-adding\n"
+        "• `/dupeevent` – clone an event (perfect for yearly stuff)\n"
+        "• `/reorder` – move an event up/down in the list\n"
+        "• `/seteventowner` – assign an owner and I’ll DM them at milestones\n\n"
+        "Need the full menu? Type `/chronohelp` and I’ll hand you the whole spellbook.\n\n"
+        "Alright — I’ll be over here, politely bullying time into behaving. 💜"
+    )
 
-sent = False
-if contact_user:
-    try:
-        await contact_user.send(setup_message)
-        sent = True
-    except discord.Forbidden:
-        sent = False
-
-if not sent:
-    # Fallback: try system channel, then first text channel where I can speak
-    fallback_channel = guild.system_channel
-    if fallback_channel is None:
-        for channel in guild.text_channels:
-            perms = channel.permissions_for(guild.me)
-            if perms.send_messages:
-                fallback_channel = channel
-                break
-
-    if fallback_channel is not None:
+    sent = False
+    if contact_user:
         try:
-            await fallback_channel.send(setup_message)
+            await contact_user.send(setup_message)
             sent = True
         except discord.Forbidden:
             sent = False
 
-# Mark as welcomed after the first attempt
-guild_state["welcomed"] = True
-save_state()
+    if not sent:
+        # Fallback: try system channel, then first text channel where I can speak
+        fallback_channel = guild.system_channel
+        if fallback_channel is None:
+            for channel in guild.text_channels:
+                perms = channel.permissions_for(guild.me)
+                if perms.send_messages:
+                    fallback_channel = channel
+                    break
 
+        if fallback_channel is not None:
+            try:
+                await fallback_channel.send(setup_message)
+                sent = True
+            except discord.Forbidden:
+                sent = False
+
+    # Mark as welcomed after the first attempt
+    guild_state["welcomed"] = True
+    save_state(
 
 @bot.event
 async def on_ready():
@@ -1615,5 +1605,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
