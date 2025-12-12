@@ -226,34 +226,34 @@ setup_message = (
 )
 
 
-    sent = False
-    if contact_user:
+sent = False
+if contact_user:
+    try:
+        await contact_user.send(setup_message)
+        sent = True
+    except discord.Forbidden:
+        sent = False
+
+if not sent:
+    # Fallback: try system channel, then first text channel where I can speak
+    fallback_channel = guild.system_channel
+    if fallback_channel is None:
+        for channel in guild.text_channels:
+            perms = channel.permissions_for(guild.me)
+            if perms.send_messages:
+                fallback_channel = channel
+                break
+
+    if fallback_channel is not None:
         try:
-            await contact_user.send(setup_message)
+            await fallback_channel.send(setup_message)
             sent = True
         except discord.Forbidden:
             sent = False
 
-    if not sent:
-        # Fallback: try system channel, then first text channel where I can speak
-        fallback_channel = guild.system_channel
-        if fallback_channel is None:
-            for channel in guild.text_channels:
-                perms = channel.permissions_for(guild.me)
-                if perms.send_messages:
-                    fallback_channel = channel
-                    break
-
-        if fallback_channel is not None:
-            try:
-                await fallback_channel.send(setup_message)
-                sent = True
-            except discord.Forbidden:
-                sent = False
-
-    # Mark as welcomed after the first attempt
-    guild_state["welcomed"] = True
-    save_state()
+# Mark as welcomed after the first attempt
+guild_state["welcomed"] = True
+save_state()
 
 
 @bot.event
@@ -1615,4 +1615,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
