@@ -691,16 +691,15 @@ async def removeevent(interaction: discord.Interaction, index: int):
         f"🗑 Removed event **{ev['name']}**.",
         ephemeral=True,
     )
-
-@bot.tree.command(name="remindall", description="Send any due milestone reminders right now (catch-up).")
+@bot.tree.command(
+    name="remindall",
+    description="Pick an event from a dropdown and post a fun @everyone reminder."
+)
 @app_commands.checks.has_permissions(manage_guild=True)
 @app_commands.guild_only()
-async def remindall(interaction: discord.Interaction):
-    """Manually trigger milestone reminders that are currently due.
-
-    This is a *catch-up* command: it only sends reminders for milestones that match
-    the current days_left and haven't been announced yet.
-    """
+@app_commands.describe(index="Choose the event to announce")
+@app_commands.autocomplete(index=_event_index_autocomplete)
+async def remindall(interaction: discord.Interaction, index: int):
     guild = interaction.guild
     assert guild is not None
 
@@ -731,51 +730,119 @@ async def remindall(interaction: discord.Interaction):
         )
         return
 
-    # Defer so Discord doesn't think we timed out while we send messages.
+    if index < 1 or index > len(events):
+        await interaction.response.send_message(
+            f"That index is out of range. Pick **1–{len(events)}**.",
+            ephemeral=True,
+        )
+        return
+
     await interaction.response.defer(ephemeral=True, thinking=True)
 
-    fired = 0
-    checked = 0
+    ev = events[index - 1]
+    name = ev.get("name", "this event")
+    dt = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
+    date_str = dt.strftime("%a, %b %d")
 
-    for ev in events:
-        checked += 1
-        dt = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
+    # compute_time_left signature has varied across builds
+    try:
+        _, days_left, passed = compute_time_left(dt, DEFAULT_TZ)
+    except TypeError:
         _, days_left, passed = compute_time_left(dt)
-        if passed or days_left < 0:
-            continue
 
-        milestones = ev.get("milestones", DEFAULT_MILESTONES)
-        announced = ev.get("announced_milestones", [])
-
-        if days_left in milestones and days_left not in announced:
-            if days_left <= 0:
-                text = f"🎉 **{ev['name']}** is **today**! 🎉"
-            elif days_left == 1:
-                text = f"✨ **{ev['name']}** is **tomorrow**! ✨"
-            else:
-                text = (
-                    f"💌 **{ev['name']}** is **{days_left} day"
-                    f"{'s' if days_left != 1 else ''}** away!"
-                )
-
-            await channel.send(text)
-            announced.append(days_left)
-            ev["announced_milestones"] = announced
-            fired += 1
-
-    if fired:
-        save_state()
-
-    if fired == 0:
-        await interaction.followup.send(
-            "✅ Checked all events — no new milestone reminders were due right now.",
-            ephemeral=True,
-        )
+    if passed:
+        options = [
+            f"🕰️ Time-travel update: **{name}** already happened ({date_str}) — but the lore remains.",
+            f"📼 **{name}** has passed ({date_str}). Someone cue the montage music.",
+        ]
+    elif days_left == 0:
+        options = [
+            f"🚨 IT’S TODAY! **{name}** is happening **today** ({date_str})! 🎉",
+            f"🎉 Big day alert: **{name}** is **TODAY** ({date_str})!!",
+        ]
+    elif days_left == 1:
+        options = [
+            f"✨ Tomorrow vibes: **{name}** is **tomorrow** ({date_str}) — prepare accordingly.",
+            f"⏳ One sleep left! **{name}** is **tomorrow** ({date_str}).",
+        ]
     else:
+        options = [
+            f"📣 Heads up! **{name}** is in **{days_left} days** ({date_str}).",
+            f"🔔 Reminder from the Time Department™: **{name}** is **{days_left} days** away ({date_str}).",
+            f"🧠 Future-you called: don’t forget **{name}** in **{days_left} days** ({date_str}).",
+        ]
+
+    msg = random.choice(options)
+
+    try:
+        await channel.send(
+            content=f"@everyone {msg}",
+            allowed_mentions=discord.AllowedMentions(everyone=True),
+        )
+    except discord.Forbidden:
         await interaction.followup.send(
-            f"📣 Sent **{fired}** due milestone reminder(s).",
+            "I can’t post that reminder (I’m missing permission to send messages and/or mention @everyone in the events channel).",
             ephemeral=True,
         )
+        return
+
+    await interaction.followup.send(
+        f"✅ Announced **{name}** (event **#{index}**) in {channel.mention}.",
+        ephemeral=True,
+    )
+
+
+async def _event_index_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[int]]:
+    guild = interaction.guild
+    if guild is None:
+        return []
+
+    guild_state = get_guild_state(guild.id)
+    sort_events(guild_state)
+    events = guild_state.get("events", []) or []
+    if not events:
+        return []
+
+    current_l = (current or "").lower().strip()
+    choices: list[app_commands.Choice[int]] = []
+
+    for i, ev in enumerate(events):
+        idx = i + 1
+        name = ev.get("name", "(Unnamed)")
+        dt = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
+
+        # compute_time_left signature has varied across builds
+        try:
+            _, days_left, passed = compute_time_left(dt, DEFAULT_TZ)
+        except TypeError:
+            _, days_left, passed = compute_time_left(dt)
+
+        if passed:
+            when = "passed"
+        elif days_left == 0:
+            when = "today"
+        elif days_left == 1:
+            when = "tomorrow"
+        else:
+            when = f"{days_left}d"
+
+        label = f"{idx}. {name} — {dt.strftime('%b %d')} ({when})"
+
+        # Filter by what the user typed (matches index or event name)
+        if current_l:
+            if current_l not in str(idx) and current_l not in name.lower():
+                continue
+
+        # Discord limits: max 25 choices, name max 100 chars
+        choices.append(app_commands.Choice(name=label[:100], value=idx))
+        if len(choices) >= 25:
+            break
+
+    return choices
+
         
 @bot.tree.command(name="update_countdown", description="Force-refresh the pinned countdown.")
 @app_commands.checks.has_permissions(manage_messages=True)
