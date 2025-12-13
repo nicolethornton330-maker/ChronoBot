@@ -756,94 +756,107 @@ async def remindall(interaction: discord.Interaction, index: int):
     guild = interaction.guild
     assert guild is not None
 
-    guild_state = get_guild_state(guild.id)
-    sort_events(guild_state)
-
-    channel_id = guild_state.get("event_channel_id")
-    if not channel_id:
-        await interaction.response.send_message(
-            "No events channel set yet. Run `/seteventchannel` in your events channel.",
-            ephemeral=True,
-        )
-        return
-
-    channel = bot.get_channel(channel_id)
-    if not isinstance(channel, discord.TextChannel):
-        await interaction.response.send_message(
-            "Configured events channel is missing or not a text channel. Run `/seteventchannel` again.",
-            ephemeral=True,
-        )
-        return
-
-    events = guild_state.get("events", []) or []
-    if not events:
-        await interaction.response.send_message(
-            "There are no events yet. Add one with `/addevent`.",
-            ephemeral=True,
-        )
-        return
-
-    if index < 1 or index > len(events):
-        await interaction.response.send_message(
-            f"That index is out of range. Pick **1–{len(events)}**.",
-            ephemeral=True,
-        )
-        return
-
-    await interaction.response.defer(ephemeral=True, thinking=True)
-
-    ev = events[index - 1]
-    name = ev.get("name", "this event")
-    dt = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
-    date_str = dt.strftime("%a, %b %d")
-
-    # compute_time_left signature has varied across builds
-    try:
-        _, days_left, passed = compute_time_left(dt, DEFAULT_TZ)
-    except TypeError:
-        _, days_left, passed = compute_time_left(dt)
-
-    if passed:
-        options = [
-            f"🕰️ Time-travel update: **{name}** already happened ({date_str}) — but the lore remains.",
-            f"📼 **{name}** has passed ({date_str}). Someone cue the montage music.",
-        ]
-    elif days_left == 0:
-        options = [
-            f"🚨 IT’S TODAY! **{name}** is happening **today** ({date_str})! 🎉",
-            f"🎉 Big day alert: **{name}** is **TODAY** ({date_str})!!",
-        ]
-    elif days_left == 1:
-        options = [
-            f"✨ Tomorrow vibes: **{name}** is **tomorrow** ({date_str}) — prepare accordingly.",
-            f"⏳ One sleep left! **{name}** is **tomorrow** ({date_str}).",
-        ]
-    else:
-        options = [
-            f"📣 Heads up! **{name}** is in **{days_left} days** ({date_str}).",
-            f"🔔 Reminder from the Time Department™: **{name}** is **{days_left} days** away ({date_str}).",
-            f"🧠 Future-you called: don’t forget **{name}** in **{days_left} days** ({date_str}).",
-        ]
-
-    msg = random.choice(options)
+    # Respond immediately (prevents “thinking…” and avoids timeouts)
+    await interaction.response.send_message("⏳ Sending your reminder…", ephemeral=True)
 
     try:
+        guild_state = get_guild_state(guild.id)
+        sort_events(guild_state)
+
+        channel_id = guild_state.get("event_channel_id")
+        if not channel_id:
+            await interaction.edit_original_response(
+                content="No events channel set yet. Run `/seteventchannel` in your events channel."
+            )
+            return
+
+        # Prefer cached channel, but fall back to fetch if needed
+        channel = bot.get_channel(channel_id) or guild.get_channel(channel_id)
+        if channel is None:
+            channel = await bot.fetch_channel(channel_id)
+
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.edit_original_response(
+                content="Configured events channel is missing or not a text channel. Run `/seteventchannel` again."
+            )
+            return
+
+        events = guild_state.get("events", []) or []
+        if not events:
+            await interaction.edit_original_response(
+                content="There are no events yet. Add one with `/addevent`."
+            )
+            return
+
+        if index < 1 or index > len(events):
+            await interaction.edit_original_response(
+                content=f"That index is out of range. Pick **1–{len(events)}**."
+            )
+            return
+
+        ev = events[index - 1]
+        name = ev.get("name", "this event")
+
+        # Guard against missing/bad timestamps
+        ts = ev.get("timestamp")
+        if ts is None:
+            await interaction.edit_original_response(
+                content=f"That event (**{name}**) is missing a timestamp. Try re-adding it with `/addevent`."
+            )
+            return
+
+        dt = datetime.fromtimestamp(ts, tz=DEFAULT_TZ)
+        date_str = dt.strftime("%a, %b %d")
+
+        # compute_time_left signature has varied across builds
+        try:
+            _, days_left, passed = compute_time_left(dt, DEFAULT_TZ)
+        except TypeError:
+            _, days_left, passed = compute_time_left(dt)
+
+        if passed:
+            options = [
+                f"🕰️ Time-travel update: **{name}** already happened ({date_str}) — but the lore remains.",
+                f"📼 **{name}** has passed ({date_str}). Someone cue the montage music.",
+            ]
+        elif days_left == 0:
+            options = [
+                f"🚨 IT’S TODAY! **{name}** is happening **today** ({date_str})! 🎉",
+                f"🎉 Big day alert: **{name}** is **TODAY** ({date_str})!!",
+            ]
+        elif days_left == 1:
+            options = [
+                f"✨ Tomorrow vibes: **{name}** is **tomorrow** ({date_str}) — prepare accordingly.",
+                f"⏳ One sleep left! **{name}** is **tomorrow** ({date_str}).",
+            ]
+        else:
+            options = [
+                f"📣 Heads up! **{name}** is in **{days_left} days** ({date_str}).",
+                f"🔔 Reminder from the Time Department™: **{name}** is **{days_left} days** away ({date_str}).",
+                f"🧠 Future-you called: don’t forget **{name}** in **{days_left} days** ({date_str}).",
+            ]
+
+        msg = random.choice(options)
+
         await channel.send(
             content=f"@everyone {msg}",
             allowed_mentions=discord.AllowedMentions(everyone=True),
         )
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "I can’t post that reminder (I’m missing permission to send messages and/or mention @everyone in the events channel).",
-            ephemeral=True,
+
+        await interaction.edit_original_response(
+            content=f"✅ Announced **{name}** in {channel.mention}."
         )
-        return
 
-    await interaction.followup.send(
-        f"✅ Announced **{name}** (event **#{index}**) in {channel.mention}.",
-        ephemeral=True,
-    )
-
+    except discord.Forbidden:
+        await interaction.edit_original_response(
+            content="❌ I’m blocked from sending messages and/or mentioning @everyone in the events channel."
+        )
+    except Exception as e:
+        # This ensures you *never* get stuck on “thinking…”
+        await interaction.edit_original_response(
+            content=f"❌ Something went wrong while sending the reminder: `{type(e).__name__}: {e}`"
+        )
+        raise  # keeps the traceback in Render logs (useful!)
         
 @bot.tree.command(name="update_countdown", description="Force-refresh the pinned countdown.")
 @app_commands.checks.has_permissions(manage_messages=True)
@@ -1727,3 +1740,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
