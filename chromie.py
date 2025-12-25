@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from typing import Optional, List, Tuple
-
+import time
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -22,6 +22,16 @@ TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 
 EMBED_COLOR = discord.Color.from_rgb(140, 82, 255)  # ChronoBot purple
 
+LOG_THROTTLE_SECONDS = 60 * 30  # 30 minutes
+_last_log = {}  # (guild_id, code) -> last_time
+
+def log_throttled(guild_id: int, code: str, msg: str):
+    key = (guild_id, code)
+    now = time.time()
+    last = _last_log.get(key, 0)
+    if now - last >= LOG_THROTTLE_SECONDS:
+        _last_log[key] = now
+        print(msg)
 
 # ==========================
 # STATE HANDLING
@@ -400,55 +410,44 @@ async def get_or_create_pinned_message(guild_id: int, channel: discord.TextChann
 
     perms = channel.permissions_for(bot_member)
     if not perms.view_channel or not perms.send_messages:
-        print(f"[Guild {guild_id}] Missing view/send permissions in #{channel.name}.")
         return None
 
-    # ---- If we have a stored message ID, try to fetch it (ONLY if we can read history) ----
+    # ---- If we have a stored pinned ID, try to fetch it ----
     if pinned_id:
+        # If we can't read history, we can't fetch/edit, so DO NOT create new messages.
         if not perms.read_message_history:
-            print(f"[Guild {guild_id}] Missing Read Message History in #{channel.name}. Can't fetch pinned message to edit.")
-            # IMPORTANT: don't clear pinned_message_id (that causes recreation spam)
             return None
 
         try:
-            msg = await channel.fetch_message(int(pinned_id))
-            return msg
-        except discord.NotFound:
-            # message deleted; clear and create below
+            return await channel.fetch_message(int(pinned_id))
+        except (discord.NotFound, discord.Forbidden):
+            # Message deleted or no longer accessible – clear and allow recreation
             guild_state["pinned_message_id"] = None
             save_state()
-        except discord.Forbidden:
-            print(f"[Guild {guild_id}] Forbidden fetching pinned message in #{channel.name}.")
-            return None
+            pinned_id = None
         except discord.HTTPException as e:
-            print(f"[Guild {guild_id}] HTTP error fetching pinned message: {e}.")
+            print(f"[Guild {guild_id}] HTTP error fetching pinned message: {e}")
             return None
 
-    # ---- Create a new message (and pin if allowed) ----
+    # ---- Only create a message if we truly don't have one stored ----
     embed = build_embed_for_guild(guild_state)
     try:
         msg = await channel.send(embed=embed)
-    except discord.Forbidden:
-        print(f"[Guild {guild_id}] Missing permission to send messages in #{channel.name}.")
-        return None
-    except discord.HTTPException as e:
-        print(f"[Guild {guild_id}] Failed to send pinned message: {e}")
+    except (discord.Forbidden, discord.HTTPException):
         return None
 
-    # Pin only if allowed (otherwise it will still work as the "tracked" message)
+    # Pin only if allowed. Either way, store msg.id so we can edit it later.
     if perms.manage_messages:
         try:
             await msg.pin()
-        except discord.Forbidden:
-            print(f"[Guild {guild_id}] Forbidden pinning messages in #{channel.name}.")
-        except discord.HTTPException as e:
-            print(f"[Guild {guild_id}] Failed to pin message: {e}")
-    else:
-        print(f"[Guild {guild_id}] Missing Manage Messages in #{channel.name} (can't pin).")
+        except Exception:
+            pass
 
     guild_state["pinned_message_id"] = msg.id
     save_state()
     return msg
+
+
 
 
 async def get_text_channel(channel_id: int) -> Optional[discord.TextChannel]:
