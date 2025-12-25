@@ -403,38 +403,25 @@ async def get_or_create_pinned_message(guild_id: int, channel: discord.TextChann
         print(f"[Guild {guild_id}] Missing view/send permissions in #{channel.name}.")
         return None
 
-    # ---- If we have a stored pinned ID, try to fetch it (requires Read Message History) ----
-    if pinned_id and not perms.read_message_history:
-        print(
-            f"[Guild {guild_id}] Missing Read Message History in #{channel.name}. "
-            "Clearing pinned_message_id and creating a new pinned message."
-        )
-        guild_state["pinned_message_id"] = None
-        save_state()
-        pinned_id = None
+    # ---- If we have a stored message ID, try to fetch it (ONLY if we can read history) ----
+    if pinned_id:
+        if not perms.read_message_history:
+            print(f"[Guild {guild_id}] Missing Read Message History in #{channel.name}. Can't fetch pinned message to edit.")
+            # IMPORTANT: don't clear pinned_message_id (that causes recreation spam)
+            return None
 
         try:
             msg = await channel.fetch_message(int(pinned_id))
             return msg
         except discord.NotFound:
-            # Message deleted – clear and recreate below
+            # message deleted; clear and create below
             guild_state["pinned_message_id"] = None
             save_state()
         except discord.Forbidden:
-            print(
-                f"[Guild {guild_id}] Forbidden fetching pinned message in #{channel.name}. "
-                "Clearing pinned_message_id."
-            )
-            guild_state["pinned_message_id"] = None
-            save_state()
+            print(f"[Guild {guild_id}] Forbidden fetching pinned message in #{channel.name}.")
             return None
         except discord.HTTPException as e:
-            print(
-                f"[Guild {guild_id}] HTTP error fetching pinned message: {e}. "
-                "Clearing pinned_message_id."
-            )
-            guild_state["pinned_message_id"] = None
-            save_state()
+            print(f"[Guild {guild_id}] HTTP error fetching pinned message: {e}.")
             return None
 
     # ---- Create a new message (and pin if allowed) ----
@@ -448,6 +435,7 @@ async def get_or_create_pinned_message(guild_id: int, channel: discord.TextChann
         print(f"[Guild {guild_id}] Failed to send pinned message: {e}")
         return None
 
+    # Pin only if allowed (otherwise it will still work as the "tracked" message)
     if perms.manage_messages:
         try:
             await msg.pin()
@@ -547,15 +535,7 @@ async def update_countdowns():
 
             pinned = await get_or_create_pinned_message(guild_id, channel)
             if pinned is None:
-                print(f"[Guild {guild_id}] Could not create/access pinned message in #{channel.name}. Check permissions.")
-            else:
-                embed = build_embed_for_guild(guild_state)
-                try:
-                    await pinned.edit(embed=embed)
-                except discord.Forbidden:
-                    print(f"[Guild {guild_id}] Missing permission to edit pinned message in #{channel.name}.")
-                except discord.HTTPException as e:
-                    print(f"[Guild {guild_id}] Failed to edit pinned message: {e}")
+                continue
 
 
             # -------------------------
