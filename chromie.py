@@ -101,20 +101,25 @@ def sort_events(guild_state: dict):
 
 
 def save_state():
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    tmp_path = DATA_FILE.with_suffix(DATA_FILE.suffix + ".tmp")
     try:
+        DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        tmp_path = DATA_FILE.with_suffix(DATA_FILE.suffix + ".tmp")
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
+
         os.replace(tmp_path, DATA_FILE)  # atomic on most platforms
-    finally:
-        # If something went sideways, don't leave tmp clutter
+
+        # Clean up if still present (paranoia)
         if tmp_path.exists():
             try:
                 tmp_path.unlink()
             except Exception:
                 pass
+
+    except Exception as e:
+        print(f"[STATE] save_state failed: {type(e).__name__}: {e}")
+
 
 
 def get_guild_state(guild_id: int) -> dict:
@@ -244,6 +249,136 @@ class ChromieBot(commands.Bot):
 
 bot = ChromieBot(command_prefix="!", intents=intents)
 
+# ==========================
+# PERMISSION NOTIFY (OWNER DM)
+# ==========================
+
+PERM_WARNING_THROTTLE_SECONDS = 60 * 60 * 12  # 12 hours
+_perm_warn_last = {}  # (guild_id, channel_id, code) -> last_ts
+
+RECOMMENDED_CHANNEL_PERMS = (
+    "view_channel",
+    "send_messages",
+    "embed_links",
+    "read_message_history",
+    "manage_messages",  # needed for pin/unpin
+)
+
+PERM_LABELS = {
+    "view_channel": "View Channel",
+    "send_messages": "Send Messages",
+    "embed_links": "Embed Links",
+    "read_message_history": "Read Message History",
+    "manage_messages": "Manage Messages (pin/unpin)",
+}
+
+
+def _now_ts() -> int:
+    return int(time.time())
+
+
+def _bot_member_cached(guild: discord.Guild) -> Optional[discord.Member]:
+    # Avoid network fetches in the error path; cached lookup is fine.
+    if guild.me is not None:
+        return guild.me
+    if bot.user is None:
+        return None
+    return guild.get_member(bot.user.id)
+
+
+def missing_channel_perms(channel: discord.abc.GuildChannel, guild: discord.Guild) -> list[str]:
+    me = _bot_member_cached(guild)
+    if me is None:
+        # Worst-case guess
+        return list(RECOMMENDED_CHANNEL_PERMS)
+
+    perms = channel.permissions_for(me)
+    return [p for p in RECOMMENDED_CHANNEL_PERMS if not getattr(perms, p, False)]
+
+
+def build_perm_howto(channel: discord.abc.GuildChannel, missing: list[str]) -> str:
+    pretty = "\n".join(f"• {PERM_LABELS.get(p, p)}" for p in missing)
+
+    return (
+        f"**Missing permissions in #{getattr(channel, 'name', 'this channel')}:**\n"
+        f"{pretty}\n\n"
+        "**Fix (channel-specific):**\n"
+        f"1) Right-click **#{getattr(channel, 'name', 'the channel')}** → **Edit Channel**\n"
+        "2) Go to **Permissions**\n"
+        "3) **Add Members or Roles** → select **ChronoBot/Chromie** (or its role)\n"
+        "4) Set these to **Allow (✅)**:\n"
+        "   • View Channel\n"
+        "   • Send Messages\n"
+        "   • Embed Links\n"
+        "   • Read Message History\n"
+        "   • Manage Messages\n"
+        "5) Remove any **red ❌ denies** for the bot/role (deny overrides allow)\n"
+    )
+
+
+async def notify_owner_missing_perms(
+    guild: discord.Guild,
+    channel: Optional[discord.abc.GuildChannel],
+    *,
+    missing: list[str],
+    action: str,
+):
+    """DM server owner with a how-to guide (throttled)."""
+    if not missing:
+        return
+
+    channel_id = channel.id if channel else 0
+    code = f"{action}|" + ",".join(sorted(missing))
+    key = (guild.id, channel_id, code)
+
+    last = _perm_warn_last.get(key, 0)
+    if _now_ts() - last < PERM_WARNING_THROTTLE_SECONDS:
+        return
+    _perm_warn_last[key] = _now_ts()
+
+    # Resolve owner (member if cached; user fetch fallback)
+    owner = guild.owner
+    if owner is None:
+        try:
+            owner = await bot.fetch_user(guild.owner_id)
+        except Exception:
+            owner = None
+
+    chan_name = f"#{getattr(channel, 'name', 'unknown')}" if channel else "(unknown channel)"
+    header = (
+        "⚠️ **ChronoBot permission issue**\n\n"
+        f"I tried to **{action}** in **{chan_name}** on **{guild.name}**, but I’m missing permissions.\n\n"
+    )
+
+    howto = build_perm_howto(channel, missing) if channel else (
+        "Please ensure the bot can View Channel, Send Messages, Embed Links, Read Message History, and Manage Messages "
+        "in the channel you set for countdowns."
+    )
+
+    text = header + howto
+
+    # Prefer DM
+    if owner:
+        try:
+            await owner.send(text)
+            return
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    # Fallback: system channel or first channel we can speak in (no pings)
+    fallback = guild.system_channel
+    if fallback is None:
+        me = _bot_member_cached(guild)
+        for ch in guild.text_channels:
+            if me and ch.permissions_for(me).send_messages:
+                fallback = ch
+                break
+
+    if fallback:
+        try:
+            await fallback.send(text, allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            pass
 
 
 async def get_bot_member(guild: discord.Guild) -> Optional[discord.Member]:
@@ -300,19 +435,26 @@ async def send_onboarding_for_guild(guild: discord.Guild):
 
     if not sent:
         fallback_channel = guild.system_channel
+
         if fallback_channel is None:
-            for channel in guild.text_channels:
-                perms = channel.permissions_for(await get_bot_member(guild) or guild.default_role)
-                if perms.send_messages:
-                    fallback_channel = channel
+            bot_m = await get_bot_member(guild)  # resolve once (avoids repeated fetches)
+
+            for ch in guild.text_channels:
+                target = bot_m if bot_m is not None else guild.default_role
+                perms = ch.permissions_for(target)
+
+                # minimum needed to post the setup message
+                if perms.view_channel and perms.send_messages:
+                    fallback_channel = ch
                     break
 
         if fallback_channel is not None:
             try:
-                await fallback_channel.send(setup_message)
+                await fallback_channel.send(setup_message, allowed_mentions=discord.AllowedMentions.none())
                 sent = True
             except discord.Forbidden:
                 sent = False
+
 
     guild_state["welcomed"] = True
     save_state()
@@ -377,24 +519,44 @@ async def rebuild_pinned_message(guild_id: int, channel: discord.TextChannel, gu
     old_id = guild_state.get("pinned_message_id")
     if old_id:
         try:
-            old_msg = await channel.fetch_message(old_id)
+            old_msg = await channel.fetch_message(int(old_id))
             await old_msg.unpin()
         except (discord.NotFound, discord.Forbidden):
             pass
 
     embed = build_embed_for_guild(guild_state)
-    msg = await channel.send(embed=embed)
+
+    try:
+        msg = await channel.send(embed=embed)
+    except discord.Forbidden:
+        missing = missing_channel_perms(channel, channel.guild)
+        await notify_owner_missing_perms(
+            channel.guild,
+            channel,
+            missing=missing,
+            action="send the countdown message",
+        )
+        return None
+    except discord.HTTPException:
+        return None
 
     try:
         await msg.pin()
     except discord.Forbidden:
-        print(f"[Guild {guild_id}] Missing permission to pin messages.")
+        missing = missing_channel_perms(channel, channel.guild)
+        await notify_owner_missing_perms(
+            channel.guild,
+            channel,
+            missing=missing,
+            action="pin the countdown message",
+        )
     except discord.HTTPException as e:
         print(f"[Guild {guild_id}] Failed to pin message: {e}")
 
     guild_state["pinned_message_id"] = msg.id
     save_state()
     return msg
+
 
 
 async def get_or_create_pinned_message(
@@ -449,15 +611,33 @@ async def get_or_create_pinned_message(
     embed = build_embed_for_guild(guild_state)
     try:
         msg = await channel.send(embed=embed)
-    except (discord.Forbidden, discord.HTTPException):
+    except discord.Forbidden:
+        missing = missing_channel_perms(channel, channel.guild)
+        await notify_owner_missing_perms(
+            channel.guild,
+            channel,
+            missing=missing,
+            action="send the countdown message",
+        )
+        return None
+    except discord.HTTPException:
         return None
 
     # Pin only if allowed. Either way, store msg.id so we can edit it later.
     if perms.manage_messages:
         try:
             await msg.pin()
+        except discord.Forbidden:
+            missing = missing_channel_perms(channel, channel.guild)
+            await notify_owner_missing_perms(
+                channel.guild,
+                channel,
+                missing=missing,
+                action="pin the countdown message",
+            )
         except Exception:
             pass
+
 
     guild_state["pinned_message_id"] = msg.id
     save_state()
@@ -549,19 +729,24 @@ async def update_countdowns():
                 continue
 
             pinned = await get_or_create_pinned_message(guild_id, channel, allow_create=False)
-            if pinned is None:
-                continue
+            if pinned is not None:
+                # ✅ Edit the existing pinned message (no new pins, no notifications)
+                embed = build_embed_for_guild(guild_state)
+                try:
+                    await pinned.edit(embed=embed)
+                except discord.Forbidden:
+                    missing = missing_channel_perms(channel, channel.guild)
+                    await notify_owner_missing_perms(
+                        channel.guild,
+                        channel,
+                        missing=missing,
+                        action="edit/update the pinned countdown message",
+                    )
+                except discord.HTTPException as e:
+                    print(f"[Guild {guild_id}] Failed to edit pinned message: {e}")
 
-            # ✅ Edit the existing pinned message (no new pins, no notifications)
-            embed = build_embed_for_guild(guild_state)
-            try:
-                await pinned.edit(embed=embed)
-            except discord.Forbidden:
-                # Can't edit message (rare; could be missing perms or message not owned by bot)
-                continue
-            except discord.HTTPException as e:
-                print(f"[Guild {guild_id}] Failed to edit pinned message: {e}")
-                continue
+            # IMPORTANT: Do NOT "continue" here.
+            # Even if the pinned message can't be edited, milestone/repeat reminders should still run.
 
 
             # -------------------------
@@ -612,9 +797,13 @@ async def update_countdowns():
                     try:
                         await channel.send(text, allowed_mentions=allowed_mentions)
                     except discord.Forbidden:
-                        continue
-                    except discord.HTTPException as e:
-                        print(f"[Guild {guild_id}] Failed to send milestone message: {e}")
+                        missing = missing_channel_perms(channel, channel.guild)
+                        await notify_owner_missing_perms(
+                            channel.guild,
+                            channel,
+                            missing=missing,
+                            action="send milestone reminders",
+                        )
                         continue
 
                     try:
@@ -655,10 +844,19 @@ async def update_countdowns():
                                 date_str = dt.strftime("%B %d, %Y")
                                 try:
                                     await channel.send(
-                                        f"🔁 Reminder: **{ev.get('name', 'Event')}** is in **{desc}** (on **{date_str}**)."
+                                        f"🔁 Reminder: **{ev.get('name', 'Event')}** is in **{desc}** (on **{date_str}**).",
+                                        allowed_mentions=discord.AllowedMentions.none(),
                                     )
                                 except discord.Forbidden:
+                                    missing = missing_channel_perms(channel, channel.guild)
+                                    await notify_owner_missing_perms(
+                                        channel.guild,
+                                        channel,
+                                        missing=missing,
+                                        action="send repeating reminders",
+                                    )
                                     continue
+
                                 except discord.HTTPException as e:
                                     print(f"[Guild {guild_id}] Failed to send repeat reminder: {e}")
                                     continue
@@ -729,10 +927,32 @@ async def seteventchannel(interaction: discord.Interaction):
     sort_events(guild_state)
     save_state()
 
+    # Proactive permission check + owner DM (throttled)
+    channel = interaction.channel
+    missing: list[str] = []
+    if channel and hasattr(channel, "permissions_for"):
+        missing = missing_channel_perms(channel, guild)
+        if missing:
+            await notify_owner_missing_perms(
+                guild,
+                channel,
+                missing=missing,
+                action="set up the countdown (send + pin + update)",
+            )
+
+    extra = ""
+    if missing:
+        extra = (
+            "\n\n⚠️ I’m missing some permissions in this channel, so the countdown may not work yet. "
+            "I’ve messaged the server owner with a quick fix guide."
+        )
+
     await interaction.response.send_message(
-        "✅ This channel is now the event countdown channel for this server.\nUse `/addevent` to add events.",
+        "✅ This channel is now the event countdown channel for this server.\nUse `/addevent` to add events."
+        + extra,
         ephemeral=True,
     )
+
 
 
 @bot.tree.command(name="linkserver", description="Link yourself to this server for DM control.")
@@ -1194,10 +1414,17 @@ async def remindall(interaction: discord.Interaction, index: Optional[int] = Non
     try:
         await channel.send(msg, allowed_mentions=allowed)
     except discord.Forbidden:
-        await interaction.response.send_message("I don't have permission to send messages in the event channel.", ephemeral=True)
-        return
-    except Exception:
-        await interaction.response.send_message("Something went wrong trying to send the reminder.", ephemeral=True)
+        missing = missing_channel_perms(channel, channel.guild)
+        await notify_owner_missing_perms(
+            channel.guild,
+            channel,
+            missing=missing,
+            action="send /remindall notifications",
+        )
+        await interaction.response.send_message(
+            "I don't have permission to send messages in the event channel.",
+            ephemeral=True,
+        )
         return
 
     await interaction.response.send_message("✅ Reminder sent.", ephemeral=True)
@@ -1582,7 +1809,7 @@ async def update_countdown_cmd(interaction: discord.Interaction):
     channel = interaction.channel
     assert isinstance(channel, discord.TextChannel)
 
-    pinned = await get_or_create_pinned_message(guild.id, channel)
+    pinned = await get_or_create_pinned_message(guild.id, channel, allow_create=True)
     if pinned is None:
         await interaction.response.send_message(
             "I couldn't create or access the pinned countdown message here. Check my permissions.",
@@ -1594,8 +1821,16 @@ async def update_countdown_cmd(interaction: discord.Interaction):
     try:
         await pinned.edit(embed=embed)
     except discord.Forbidden:
+        missing = missing_channel_perms(channel, channel.guild)
+        await notify_owner_missing_perms(
+            channel.guild,
+            channel,
+            missing=missing,
+            action="edit/update the pinned countdown message",
+        )
         await interaction.response.send_message(
-            "I don't have permission to edit that pinned message (need Manage Messages).",
+            "I don't have permission to edit that pinned message here. "
+            "I’ve messaged the server owner with a permissions fix guide.",
             ephemeral=True,
         )
         return
@@ -1605,6 +1840,7 @@ async def update_countdown_cmd(interaction: discord.Interaction):
             ephemeral=True,
         )
         return
+
 
     await interaction.response.send_message("⏱ Countdown updated.", ephemeral=True)
 
