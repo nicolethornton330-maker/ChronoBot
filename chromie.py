@@ -1,4 +1,3 @@
-
 import os
 import json
 from pathlib import Path
@@ -10,6 +9,7 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 from threading import Lock
+import random
 
 # ==========================
 # CONFIG
@@ -75,6 +75,17 @@ State structure (high level):
 }
 """
 
+EVENT_START_GRACE_SECONDS = 60 * 60  # 1 hour: announce if bot wakes up within 1 hour after start
+
+def build_event_start_blast(event_name: str) -> str:
+    # Keep it short, loud, and celebratory.
+    templates = [
+        "🎉 IT’S HAPPENING!! 🎉 **{name}** starts **RIGHT NOW** — the countdown has officially paid off! 🥳✨",
+        "🚨 TIME’S UP (in the best way) 🚨 **{name}** is **LIVE NOW**! Everybody scream internally! 🎊",
+        "🔥 THE MOMENT HAS ARRIVED 🔥 **{name}** is starting **NOW**! Let’s GOOOOOO! 💜🎉",
+        "✨ ZERO HAS BEEN REACHED ✨ **{name}** is happening **RIGHT NOW** — main character energy only. 🎇",
+    ]
+    return random.choice(templates).format(name=event_name or "The Event")
 
 def load_state() -> dict:
     data = {}
@@ -248,16 +259,21 @@ def prune_past_events(guild_state: dict, now: Optional[datetime] = None) -> int:
             continue
 
         if dt <= now:
-            removed += 1
-        else:
-            kept.append(ev)
+            age = (now - dt).total_seconds()
+            start_announced = bool(ev.get("start_announced", False))
+
+            # Remove if we already did the "started" blast,
+            # OR if it's so old it's outside the grace window.
+            if start_announced or age > EVENT_START_GRACE_SECONDS:
+                removed += 1
+            else:
+                kept.append(ev)
 
     if removed:
         guild_state["events"] = kept
         sort_events(guild_state)
 
     return removed
-
 
 state = load_state()
 
@@ -278,6 +294,8 @@ for _, g_state in state.get("guilds", {}).items():
         ev.setdefault("announced_repeat_dates", [])
         ev.setdefault("silenced", False)
         ev.setdefault("owner_user_id", None)
+        ev.setdefault("start_announced", False)
+
 
     removed = prune_past_events(g_state, now=_boot_now)
     if removed:
@@ -910,41 +928,15 @@ async def update_countdowns():
             if channel is None:
                 continue
 
-            # ---- Auto-delete events that have passed ----
-            now = datetime.now(DEFAULT_TZ)
-            removed = prune_past_events(guild_state, now=now)
-            if removed:
-                save_state()
-
-            # ---- Update pinned embed (hardened) ----
-            bot_member = channel.guild.get_member(bot.user.id) if bot.user else None
-            if bot_member is None and bot.user:
-                try:
-                    bot_member = await channel.guild.fetch_member(bot.user.id)
-                except Exception:
-                    continue
-
+            bot_member = await get_bot_member(channel.guild)
             if bot_member is None:
                 continue
 
-            pinned = await get_or_create_pinned_message(guild_id, channel, allow_create=True)
-            if pinned is not None:
-                embed = build_embed_for_guild(guild_state)
-                try:
-                    await pinned.edit(embed=embed)
-                except discord.Forbidden:
-                    missing = missing_channel_perms(channel, channel.guild)
-                    await notify_owner_missing_perms(
-                        channel.guild,
-                        channel,
-                        missing=missing,
-                        action="edit/update the pinned countdown message",
-                    )
-                except discord.HTTPException as e:
-                    print(f"[Guild {guild_id}] Failed to edit pinned message: {e}")
+            state_changed = False
 
-            # ---- Milestone + repeating reminder checks ----
+            # ---- EVENT CHECKS (start blast + milestones + repeats) ----
             today = _today_local_date()
+            now = datetime.now(DEFAULT_TZ)
 
             for ev in list(guild_state.get("events", [])):
                 if ev.get("silenced", False):
@@ -954,15 +946,55 @@ async def update_countdowns():
                 if not isinstance(ts, int):
                     continue
 
-                dt = datetime.fromtimestamp(ts, tz=DEFAULT_TZ)
+                try:
+                    dt = datetime.fromtimestamp(ts, tz=DEFAULT_TZ)
+                except Exception:
+                    continue
 
+                # ---- EVENT START BLAST (time-of-event) ----
+                if dt <= now:
+                    if not bool(ev.get("start_announced", False)):
+                        age = (now - dt).total_seconds()
+                        if age <= EVENT_START_GRACE_SECONDS:
+                            mention_prefix = ""
+                            allowed = discord.AllowedMentions.none()
+
+                            perms = channel.permissions_for(bot_member)
+                            if perms.mention_everyone:
+                                mention_prefix, allowed = build_everyone_mention()
+                            else:
+                                mention_prefix, allowed = build_milestone_mention(channel, guild_state)
+
+                            text = mention_prefix + build_event_start_blast(ev.get("name", "Event"))
+
+                            try:
+                                await channel.send(text, allowed_mentions=allowed)
+                                ev["start_announced"] = True
+                                save_state()
+                                state_changed = True
+                            except discord.Forbidden:
+                                missing = missing_channel_perms(channel, channel.guild)
+                                await notify_owner_missing_perms(
+                                    channel.guild,
+                                    channel,
+                                    missing=missing,
+                                    action="send the event start announcement",
+                                )
+                            except discord.HTTPException as e:
+                                print(f"[Guild {guild_id}] Failed to send start blast: {e}")
+
+                    continue  # don’t do milestones/repeats for started/past events
+
+                # ---- Milestones + repeating reminders (your existing logic) ----
                 desc, _, passed = compute_time_left(dt)
-                milestone_sent_today = False
+                if passed:
+                    continue
 
                 days_left = calendar_days_left(dt)
-                now = datetime.now(DEFAULT_TZ)
-                if dt <= now or passed or days_left < 0:
+                if days_left < 0:
                     continue
+
+                milestone_sent_today = False
 
                 milestones = ev.get("milestones", DEFAULT_MILESTONES)
                 announced = ev.get("announced_milestones", [])
@@ -970,7 +1002,6 @@ async def update_countdowns():
                     announced = []
                     ev["announced_milestones"] = announced
 
-                # ---- Milestones ----
                 if days_left in milestones and days_left not in announced:
                     mention_prefix, allowed_mentions = build_milestone_mention(channel, guild_state)
 
@@ -986,6 +1017,11 @@ async def update_countdowns():
 
                     try:
                         await channel.send(text, allowed_mentions=allowed_mentions)
+                        announced.append(days_left)
+                        ev["announced_milestones"] = announced
+                        save_state()
+                        state_changed = True
+                        milestone_sent_today = True
                     except discord.Forbidden:
                         missing = missing_channel_perms(channel, channel.guild)
                         await notify_owner_missing_perms(
@@ -1006,12 +1042,6 @@ async def update_countdowns():
                     except Exception:
                         pass
 
-                    milestone_sent_today = True
-                    announced.append(days_left)
-                    ev["announced_milestones"] = announced
-                    save_state()
-
-                # ---- Repeating reminders (every X days) ----
                 repeat_every = ev.get("repeat_every_days")
                 if isinstance(repeat_every, int) and repeat_every > 0:
                     anchor_str = ev.get("repeat_anchor_date") or today.isoformat()
@@ -1022,53 +1052,69 @@ async def update_countdowns():
                         ev["repeat_anchor_date"] = anchor.isoformat()
 
                     days_since_anchor = (today - anchor).days
-
                     if days_since_anchor > 0 and (days_since_anchor % repeat_every == 0):
                         sent_dates = ev.get("announced_repeat_dates", [])
                         if not isinstance(sent_dates, list):
                             sent_dates = []
                             ev["announced_repeat_dates"] = sent_dates
 
-                        if today.isoformat() not in sent_dates:
-                            if not milestone_sent_today:
+                        if today.isoformat() not in sent_dates and not milestone_sent_today:
+                            try:
                                 date_str = dt.strftime("%B %d, %Y")
-                                try:
-                                    await channel.send(
-                                        f"🔁 Reminder: **{ev.get('name', 'Event')}** is in **{desc}** (on **{date_str}**).",
-                                        allowed_mentions=discord.AllowedMentions.none(),
-                                    )
-                                except discord.Forbidden:
-                                    missing = missing_channel_perms(channel, channel.guild)
-                                    await notify_owner_missing_perms(
-                                        channel.guild,
-                                        channel,
-                                        missing=missing,
-                                        action="send repeating reminders",
-                                    )
-                                    continue
+                                await channel.send(
+                                    f"🔁 Reminder: **{ev.get('name', 'Event')}** is in **{desc}** (on **{date_str}**).",
+                                    allowed_mentions=discord.AllowedMentions.none(),
+                                )
+                                sent_dates.append(today.isoformat())
+                                ev["announced_repeat_dates"] = sent_dates[-180:]
+                                save_state()
+                                state_changed = True
+                            except discord.Forbidden:
+                                missing = missing_channel_perms(channel, channel.guild)
+                                await notify_owner_missing_perms(
+                                    channel.guild,
+                                    channel,
+                                    missing=missing,
+                                    action="send repeating reminders",
+                                )
+                            except discord.HTTPException as e:
+                                print(f"[Guild {guild_id}] Failed to send repeat reminder: {e}")
 
-                                except discord.HTTPException as e:
-                                    print(f"[Guild {guild_id}] Failed to send repeat reminder: {e}")
-                                    continue
+                            try:
+                                await dm_owner_if_set(
+                                    channel.guild,
+                                    ev,
+                                    f"🔁 Repeat reminder: **{ev.get('name', 'Event')}** is in **{desc}** "
+                                    f"(on {dt.strftime('%B %d, %Y at %I:%M %p %Z')})."
+                                )
+                            except Exception:
+                                pass
 
-                                try:
-                                    await dm_owner_if_set(
-                                        channel.guild,
-                                        ev,
-                                        f"🔁 Repeat reminder: **{ev.get('name', 'Event')}** is in **{desc}** "
-                                        f"(on {dt.strftime('%B %d, %Y at %I:%M %p %Z')})."
-                                    )
-                                except Exception:
-                                    pass
+            # ---- Prune after processing (so start blast can happen) ----
+            removed = prune_past_events(guild_state, now=datetime.now(DEFAULT_TZ))
+            if removed:
+                save_state()
+                state_changed = True
 
-                            sent_dates.append(today.isoformat())
-                            ev["announced_repeat_dates"] = sent_dates[-180:]
-                            save_state()
+            # ---- Update pinned embed once at end (reflects changes) ----
+            pinned = await get_or_create_pinned_message(guild_id, channel, allow_create=True)
+            if pinned is not None and state_changed:
+                try:
+                    await pinned.edit(embed=build_embed_for_guild(guild_state))
+                except discord.Forbidden:
+                    missing = missing_channel_perms(channel, channel.guild)
+                    await notify_owner_missing_perms(
+                        channel.guild,
+                        channel,
+                        missing=missing,
+                        action="edit/update the pinned countdown message",
+                    )
+                except discord.HTTPException as e:
+                    print(f"[Guild {guild_id}] Failed to edit pinned message: {e}")
 
         except Exception as e:
             print(f"[Guild {gid_str}] update_countdowns crashed for this guild: {type(e).__name__}: {e}")
             continue
-
 
 @update_countdowns.before_loop
 async def before_update_countdowns():
@@ -1328,6 +1374,7 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
         "announced_repeat_dates": [],
         "silenced": False,
         "owner_user_id": None,
+        "start_announced": False,
     }
 
     guild_state["events"].append(event)
@@ -1570,6 +1617,7 @@ async def dupeevent(interaction: discord.Interaction, index: int, date: str, tim
         "announced_repeat_dates": [],
         "silenced": ev.get("silenced", False),
         "owner_user_id": ev.get("owner_user_id"),
+        "start_announced": False,
     }
 
     g["events"].append(new_ev)
