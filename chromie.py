@@ -1,3 +1,4 @@
+
 import os
 import json
 from pathlib import Path
@@ -137,13 +138,20 @@ def get_guild_state(guild_id: int) -> dict:
             "mention_role_id": None,
             "events": [],
             "welcomed": False,
+
+            # NEW (audit)
+            "event_channel_set_by": None,
+            "event_channel_set_at": None,
         }
+
     else:
         guilds[gid].setdefault("event_channel_id", None)
         guilds[gid].setdefault("pinned_message_id", None)
         guilds[gid].setdefault("mention_role_id", None)
         guilds[gid].setdefault("events", [])
         guilds[gid].setdefault("welcomed", False)
+        guilds[gid].setdefault("event_channel_set_by", None)
+        guilds[gid].setdefault("event_channel_set_at", None)
     return guilds[gid]
 
 
@@ -258,6 +266,9 @@ _boot_now = datetime.now(DEFAULT_TZ)
 for _, g_state in state.get("guilds", {}).items():
     sort_events(g_state)
     g_state.setdefault("mention_role_id", None)
+    g_state.setdefault("event_channel_set_by", None)
+    g_state.setdefault("event_channel_set_at", None)
+
 
     for ev in g_state.get("events", []):
         ev.setdefault("milestones", DEFAULT_MILESTONES.copy())
@@ -463,6 +474,66 @@ async def notify_owner_missing_perms(
     _mark_perm_alert_sent(guild_state, key)
     save_state()
 
+async def notify_event_channel_changed(
+    guild: discord.Guild,
+    *,
+    actor: discord.abc.User,
+    old_channel_id: Optional[int],
+    new_channel: discord.TextChannel,
+):
+    """Notify owner + optionally post a lightweight audit message when event channel changes."""
+    when = datetime.now(DEFAULT_TZ).strftime("%B %d, %Y at %I:%M %p %Z")
+
+    old_ch_mention = "(not set)"
+    if old_channel_id:
+        old_ch = await get_text_channel(int(old_channel_id))
+        if old_ch is not None:
+            old_ch_mention = old_ch.mention
+        else:
+            old_ch_mention = f"(unknown channel id {old_channel_id})"
+
+    msg = (
+        "🔧 **ChronoBot configuration updated**\n"
+        f"• Event channel: {old_ch_mention} → {new_channel.mention}\n"
+        f"• Changed by: {getattr(actor, 'name', 'unknown')} (ID: {actor.id})\n"
+        f"• When: {when}"
+    )
+
+    # ---- DM server owner (primary) ----
+    owner = guild.owner
+    if owner is None:
+        try:
+            owner = await bot.fetch_user(guild.owner_id)
+        except Exception:
+            owner = None
+
+    if owner:
+        try:
+            await owner.send(msg)
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    # ---- Optional: post audit note in the NEW channel (nice for transparency) ----
+    try:
+        bot_member = await get_bot_member(guild)
+        if bot_member and new_channel.permissions_for(bot_member).send_messages:
+            await new_channel.send(msg, allowed_mentions=discord.AllowedMentions.none())
+    except Exception:
+        pass
+
+    # ---- Optional: post a breadcrumb in the OLD channel (helps people discover the move) ----
+    if old_channel_id and int(old_channel_id) != int(new_channel.id):
+        try:
+            old_ch = await get_text_channel(int(old_channel_id))
+            if old_ch:
+                bot_member = await get_bot_member(guild)
+                if bot_member and old_ch.permissions_for(bot_member).send_messages:
+                    await old_ch.send(
+                        f"🔁 ChronoBot event channel was moved to {new_channel.mention} on {when}.",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+        except Exception:
+            pass
 
 
 async def get_bot_member(guild: discord.Guild) -> Optional[discord.Member]:
@@ -1008,6 +1079,28 @@ async def before_update_countdowns():
 # SLASH COMMANDS
 # ==========================
 
+async def _safe_ephemeral(interaction: discord.Interaction, content: str):
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=True)
+        else:
+            await interaction.response.send_message(content, ephemeral=True)
+    except Exception:
+        pass
+
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        await _safe_ephemeral(interaction, "You need **Manage Server** to use that command.")
+        return
+    if isinstance(error, app_commands.CheckFailure):
+        await _safe_ephemeral(interaction, "You don’t have permission to use that command.")
+        return
+
+    # Anything else: log for you
+    print(f"[APP_COMMAND_ERROR] {type(error).__name__}: {error}")
+
 def format_events_list(guild_state: dict) -> str:
     sort_events(guild_state)
     events = guild_state.get("events", [])
@@ -1037,9 +1130,9 @@ def format_events_list(guild_state: dict) -> str:
         )
     return "\n".join(lines)
 
-
 @bot.tree.command(name="seteventchannel", description="Set this channel as the event countdown channel.")
-@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.default_permissions(manage_guild=True)  # ✅ hides command from non-manage-server users
+@app_commands.checks.has_permissions(manage_guild=True)  # ✅ runtime enforcement
 @app_commands.guild_only()
 async def seteventchannel(interaction: discord.Interaction):
     guild = interaction.guild
@@ -1053,24 +1146,60 @@ async def seteventchannel(interaction: discord.Interaction):
             content="Please run `/seteventchannel` in a **regular text channel** (not a thread/forum)."
         )
         return
-        
+
+    # ✅ Defense-in-depth: verify perms via resolved Member object
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        member = guild.get_member(interaction.user.id) or member  # best effort
+
+    perms = getattr(member, "guild_permissions", None)
+    if not perms or not (perms.manage_guild or perms.administrator):
+        await interaction.edit_original_response(
+            content="You need **Manage Server** (or **Administrator**) to change the event channel."
+        )
+        return
+
     guild_state = get_guild_state(guild.id)
-    guild_state["event_channel_id"] = interaction.channel.id
+
+    old_channel_id = guild_state.get("event_channel_id")
+    new_channel = interaction.channel
+
+    # If no-op, don’t spam notifications
+    if old_channel_id and int(old_channel_id) == int(new_channel.id):
+        await interaction.edit_original_response(
+            content="✅ This channel is already the event countdown channel."
+        )
+        return
+
+    guild_state["event_channel_id"] = new_channel.id
     guild_state["pinned_message_id"] = None
+
+    # audit fields (optional)
+    guild_state["event_channel_set_by"] = int(interaction.user.id)
+    guild_state["event_channel_set_at"] = int(time.time())
+
     sort_events(guild_state)
     save_state()
 
-    channel = interaction.channel
+    # Permissions check + owner DM (you already do this)
     missing: list[str] = []
-    if channel and hasattr(channel, "permissions_for"):
-        missing = missing_channel_perms(channel, guild)
+    if hasattr(new_channel, "permissions_for"):
+        missing = missing_channel_perms(new_channel, guild)
         if missing:
             await notify_owner_missing_perms(
                 guild,
-                channel,
+                new_channel,
                 missing=missing,
                 action="set up the countdown (send + pin + update)",
             )
+
+    # 🔔 NEW: Notify owner + optionally post audit note(s)
+    await notify_event_channel_changed(
+        guild,
+        actor=interaction.user,
+        old_channel_id=old_channel_id if isinstance(old_channel_id, int) else None,
+        new_channel=new_channel,
+    )
 
     extra = ""
     if missing:
@@ -1079,10 +1208,9 @@ async def seteventchannel(interaction: discord.Interaction):
             "I’ve messaged the server owner with a quick fix guide."
         )
 
-    await interaction.edit_original_response(content=
-        "✅ This channel is now the event countdown channel for this server.\nUse `/addevent` to add events." + extra
+    await interaction.edit_original_response(
+        content="✅ This channel is now the event countdown channel for this server.\nUse `/addevent` to add events." + extra
     )
-
 
 @bot.tree.command(name="linkserver", description="Link yourself to this server for DM control.")
 @app_commands.checks.has_permissions(manage_guild=True)
