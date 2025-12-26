@@ -303,15 +303,14 @@ bot = ChromieBot(command_prefix="!", intents=intents)
 # PERMISSION NOTIFY (OWNER DM)
 # ==========================
 
-PERM_WARNING_THROTTLE_SECONDS = 60 * 60 * 12  # 12 hours
-_perm_warn_last = {}  # (guild_id, channel_id, code) -> last_ts
+PERM_ALERT_COOLDOWN_SECONDS = 60 * 60 * 24  # 1 day (persisted in JSON state)
 
 RECOMMENDED_CHANNEL_PERMS = (
     "view_channel",
     "send_messages",
     "embed_links",
     "read_message_history",
-    "manage_messages",  # needed for pin/unpin
+    "manage_messages",  # needed for pin/unpin + editing
 )
 
 PERM_LABELS = {
@@ -321,10 +320,6 @@ PERM_LABELS = {
     "read_message_history": "Read Message History",
     "manage_messages": "Manage Messages (pin/unpin)",
 }
-
-
-def _now_ts() -> int:
-    return int(time.time())
 
 
 def _bot_member_cached(guild: discord.Guild) -> Optional[discord.Member]:
@@ -344,14 +339,40 @@ def missing_channel_perms(channel: discord.abc.GuildChannel, guild: discord.Guil
     return [p for p in RECOMMENDED_CHANNEL_PERMS if not getattr(perms, p, False)]
 
 
+def _perm_alert_key(guild_id: int, channel_id: int, code: str) -> str:
+    return f"{guild_id}:{channel_id}:{code}"
+
+
+def _get_perm_alerts_bucket(guild_state: dict) -> dict:
+    # Stored in chromie_state.json so Render restarts don’t reset the cooldown
+    bucket = guild_state.get("perm_alerts")
+    if not isinstance(bucket, dict):
+        bucket = {}
+        guild_state["perm_alerts"] = bucket
+    return bucket
+
+
+def _should_send_perm_alert(guild_state: dict, key: str) -> bool:
+    bucket = _get_perm_alerts_bucket(guild_state)
+    now = int(time.time())
+    last = int(bucket.get(key, 0) or 0)
+    return (now - last) >= PERM_ALERT_COOLDOWN_SECONDS
+
+
+def _mark_perm_alert_sent(guild_state: dict, key: str):
+    bucket = _get_perm_alerts_bucket(guild_state)
+    bucket[key] = int(time.time())
+
+
 def build_perm_howto(channel: discord.abc.GuildChannel, missing: list[str]) -> str:
     pretty = "\n".join(f"• {PERM_LABELS.get(p, p)}" for p in missing)
+    ch_name = getattr(channel, "name", "this channel")
 
     return (
-        f"**Missing permissions in #{getattr(channel, 'name', 'this channel')}:**\n"
+        f"**Missing permissions in #{ch_name}:**\n"
         f"{pretty}\n\n"
         "**Fix (channel-specific):**\n"
-        f"1) Right-click **#{getattr(channel, 'name', 'the channel')}** → **Edit Channel**\n"
+        f"1) Right-click **#{ch_name}** → **Edit Channel**\n"
         "2) Go to **Permissions**\n"
         "3) **Add Members or Roles** → select **ChronoBot/Chromie** (or its role)\n"
         "4) Set these to **Allow (✅)**:\n"
@@ -360,7 +381,8 @@ def build_perm_howto(channel: discord.abc.GuildChannel, missing: list[str]) -> s
         "   • Embed Links\n"
         "   • Read Message History\n"
         "   • Manage Messages\n"
-        "5) Remove any **red ❌ denies** for the bot/role (deny overrides allow)\n"
+        "5) Remove any **red ❌ denies** for the bot/role (deny overrides allow)\n\n"
+        "✅ Then run `/healthcheck` to confirm everything is fixed."
     )
 
 
@@ -371,24 +393,20 @@ async def notify_owner_missing_perms(
     missing: list[str],
     action: str,
 ):
+    """DM server owner once per day per (guild, channel, missing-perms-set) about a permission issue."""
     if not missing:
         return
 
-    channel_id = channel.id if channel else 0
+    guild_state = get_guild_state(guild.id)
+    channel_id = getattr(channel, "id", 0) or 0
+
+    # This makes “once per day per missing permission” behave the way you want:
+    # same missing set + same channel + same action => 1 alert/day
     code = f"{action}|" + ",".join(sorted(missing))
-    key = (guild.id, channel_id, code)
+    key = _perm_alert_key(guild.id, channel_id, code)
 
-    last = _perm_warn_last.get(key, 0)
-    if _now_ts() - last < PERM_WARNING_THROTTLE_SECONDS:
+    if not _should_send_perm_alert(guild_state, key):
         return
-    _perm_warn_last[key] = _now_ts()
-
-    owner = guild.owner
-    if owner is None:
-        try:
-            owner = await bot.fetch_user(guild.owner_id)
-        except Exception:
-            owner = None
 
     chan_name = f"#{getattr(channel, 'name', 'unknown')}" if channel else "(unknown channel)"
     header = (
@@ -397,32 +415,54 @@ async def notify_owner_missing_perms(
     )
 
     howto = build_perm_howto(channel, missing) if channel else (
-        "Please ensure the bot can View Channel, Send Messages, Embed Links, Read Message History, and Manage Messages "
-        "in the channel you set for countdowns."
+        "Please ensure the bot can View Channel, Send Messages, Embed Links, Read Message History, "
+        "and Manage Messages in the channel you set for countdowns.\n\n"
+        "✅ Then run `/healthcheck` to confirm everything is fixed."
     )
 
-    text = header + howto
+    footer = (
+        "\n\n📅 I’ll only send one reminder per day for this specific issue.\n"
+        "Next step: run `/healthcheck` (Manage Server) for diagnostics."
+    )
 
+    text = header + howto + footer
+
+    # Try DM owner
+    owner = guild.owner
+    if owner is None:
+        try:
+            owner = await bot.fetch_user(guild.owner_id)
+        except Exception:
+            owner = None
+
+    sent = False
     if owner:
         try:
             await owner.send(text)
-            return
+            sent = True
         except (discord.Forbidden, discord.HTTPException):
-            pass
+            sent = False
 
-    fallback = guild.system_channel
-    if fallback is None:
-        me = _bot_member_cached(guild)
-        for ch in guild.text_channels:
-            if me and ch.permissions_for(me).send_messages:
-                fallback = ch
-                break
+    # Fallback: system channel or first sendable channel
+    if not sent:
+        fallback = guild.system_channel
+        if fallback is None:
+            me = _bot_member_cached(guild)
+            for ch in guild.text_channels:
+                if me and ch.permissions_for(me).send_messages:
+                    fallback = ch
+                    break
 
-    if fallback:
-        try:
-            await fallback.send(text, allowed_mentions=discord.AllowedMentions.none())
-        except Exception:
-            pass
+        if fallback:
+            try:
+                await fallback.send(text, allowed_mentions=discord.AllowedMentions.none())
+            except Exception:
+                pass
+
+    # Mark (even if delivery failed) to avoid spam loops; will try again tomorrow
+    _mark_perm_alert_sent(guild_state, key)
+    save_state()
+
 
 
 async def get_bot_member(guild: discord.Guild) -> Optional[discord.Member]:
@@ -1007,6 +1047,13 @@ async def seteventchannel(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
 
+    # ✅ Guard: only allow normal text channels (not threads, not forums, etc.)
+    if not isinstance(interaction.channel, discord.TextChannel):
+        await interaction.edit_original_response(
+            content="Please run `/seteventchannel` in a **regular text channel** (not a thread/forum)."
+        )
+        return
+        
     guild_state = get_guild_state(guild.id)
     guild_state["event_channel_id"] = interaction.channel.id
     guild_state["pinned_message_id"] = None
@@ -1032,7 +1079,7 @@ async def seteventchannel(interaction: discord.Interaction):
             "I’ve messaged the server owner with a quick fix guide."
         )
 
-    await interaction.edit_original_response(
+    await interaction.edit_original_response(content=
         "✅ This channel is now the event countdown channel for this server.\nUse `/addevent` to add events." + extra
     )
 
@@ -1079,7 +1126,7 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
 
         perms = getattr(member, "guild_permissions", None)
         if not perms or not (perms.manage_guild or perms.administrator):
-            await interaction.edit_original_response(
+            await interaction.edit_original_response(content=
                 "You need the **Manage Server** or **Administrator** permission to add events in this server."
             )
             return
@@ -1091,14 +1138,14 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
         user_links = get_user_links()
         linked_guild_id = user_links.get(str(user.id))
         if not linked_guild_id:
-            await interaction.edit_original_response(
+            await interaction.edit_original_response(content=
                 "I don't know which server to use for your DMs yet.\nIn the server you want to control, run `/linkserver`, then DM me `/addevent` again."
             )
             return
 
         guild = bot.get_guild(linked_guild_id)
         if not guild:
-            await interaction.edit_original_response(
+            await interaction.edit_original_response(content=
                 "I can't find the linked server anymore. Maybe I was removed from it?\nRe-add me and run `/linkserver` again."
             )
             return
@@ -1112,7 +1159,7 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
 
         perms = getattr(member, "guild_permissions", None)
         if not perms or not (perms.manage_guild or perms.administrator):
-            await interaction.edit_original_response(
+            await interaction.edit_original_response(content=
                 "You no longer have **Manage Server** (or **Administrator**) in the linked server, so I can’t add events via DM."
             )
             return
@@ -1130,7 +1177,7 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
     try:
         dt = datetime.strptime(f"{date} {time}", "%m/%d/%Y %H:%M")
     except ValueError:
-        await interaction.edit_original_response(
+        await interaction.edit_original_response(content=
             "I couldn't understand that date/time.\nUse: `date: 04/12/2026` `time: 09:00` (MM/DD/YYYY + 24-hour HH:MM)."
         )
         return
@@ -1138,7 +1185,7 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
     dt = dt.replace(tzinfo=DEFAULT_TZ)
 
     if dt <= datetime.now(DEFAULT_TZ):
-        await interaction.edit_original_response(
+        await interaction.edit_original_response(content=
             "That date/time is in the past. Please choose a future time."
         )
         return
@@ -1165,7 +1212,7 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
         if channel is not None:
             await rebuild_pinned_message(guild.id, channel, guild_state)
 
-    await interaction.edit_original_response(
+    await interaction.edit_original_response(content=
         f"✅ Added event **{name}** on {dt.strftime('%B %d, %Y at %I:%M %p %Z')} in server **{guild.name}**."
     )
 
@@ -1262,11 +1309,11 @@ async def removeevent(interaction: discord.Interaction, index: int):
     events = guild_state.get("events", [])
 
     if not events:
-        await interaction.edit_original_response("There are no events to remove.")
+        await interaction.edit_original_response(content="There are no events to remove.")
         return
 
     if index < 1 or index > len(events):
-        await interaction.edit_original_response(f"Index must be between 1 and {len(events)}.")
+        await interaction.edit_original_response(content=f"Index must be between 1 and {len(events)}.")
         return
 
     ev = events.pop(index - 1)
@@ -1278,7 +1325,7 @@ async def removeevent(interaction: discord.Interaction, index: int):
         if ch:
             await rebuild_pinned_message(guild.id, ch, guild_state)
 
-    await interaction.edit_original_response(f"🗑 Removed event **{ev['name']}**.")
+    await interaction.edit_original_response(content=f"🗑 Removed event **{ev['name']}**.")
 
 
 @bot.tree.command(name="editevent", description="Edit an event's name/date/time.")
@@ -1300,7 +1347,7 @@ async def editevent(interaction: discord.Interaction, index: int, name: Optional
     g = get_guild_state(guild.id)
     ev = get_event_by_index(g, index)
     if not ev:
-        await interaction.edit_original_response("Invalid index. Use `/listevents`.")
+        await interaction.edit_original_response(content="Invalid index. Use `/listevents`.")
         return
 
     if name and name.strip():
@@ -1319,13 +1366,13 @@ async def editevent(interaction: discord.Interaction, index: int, name: Optional
         try:
             dt = datetime.strptime(f"{new_date} {new_time}", "%m/%d/%Y %H:%M").replace(tzinfo=DEFAULT_TZ)
         except ValueError:
-            await interaction.edit_original_response(
+            await interaction.edit_original_response(content=
                 "I couldn't understand that date/time.\nUse MM/DD/YYYY + 24-hour HH:MM."
             )
             return
 
         if dt <= datetime.now(DEFAULT_TZ):
-            await interaction.edit_original_response("That date/time is in the past. Please choose a future time.")
+            await interaction.edit_original_response(content="That date/time is in the past. Please choose a future time.")
             return
 
         ev["timestamp"] = int(dt.timestamp())
@@ -1342,7 +1389,7 @@ async def editevent(interaction: discord.Interaction, index: int, name: Optional
             await rebuild_pinned_message(guild.id, ch, g)
 
     dt_final = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
-    await interaction.edit_original_response(
+    await interaction.edit_original_response(content=
         f"✅ Updated event #{index}: **{ev['name']}**\n"
         f"🗓️ {dt_final.strftime('%B %d, %Y at %I:%M %p %Z')}"
     )
@@ -1368,7 +1415,7 @@ async def dupeevent(interaction: discord.Interaction, index: int, date: str, tim
     sort_events(g)
     ev = get_event_by_index(g, index)
     if not ev:
-        await interaction.edit_original_response("Invalid index. Use `/listevents`.")
+        await interaction.edit_original_response(content="Invalid index. Use `/listevents`.")
         return
 
     orig_dt = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
@@ -1378,11 +1425,11 @@ async def dupeevent(interaction: discord.Interaction, index: int, date: str, tim
     try:
         dt = datetime.strptime(f"{date.strip()} {use_time}", "%m/%d/%Y %H:%M").replace(tzinfo=DEFAULT_TZ)
     except ValueError:
-        await interaction.edit_original_response("Invalid date/time. Use MM/DD/YYYY + 24-hour HH:MM.")
+        await interaction.edit_original_response(content="Invalid date/time. Use MM/DD/YYYY + 24-hour HH:MM.")
         return
 
     if dt <= datetime.now(DEFAULT_TZ):
-        await interaction.edit_original_response("That date/time is in the past. Please choose a future time.")
+        await interaction.edit_original_response(content="That date/time is in the past. Please choose a future time.")
         return
 
     new_ev = {
@@ -1407,7 +1454,7 @@ async def dupeevent(interaction: discord.Interaction, index: int, date: str, tim
         if ch:
             await rebuild_pinned_message(guild.id, ch, g)
 
-    await interaction.edit_original_response(
+    await interaction.edit_original_response(content=
         f"🧬 Duplicated event #{index} → added **{new_ev['name']}** on {dt.strftime('%B %d, %Y at %I:%M %p %Z')}."
     )
 
@@ -1428,17 +1475,17 @@ async def remindall(interaction: discord.Interaction, index: Optional[int] = Non
 
     channel_id = g.get("event_channel_id")
     if not channel_id:
-        await interaction.edit_original_response("No event channel set. Run `/seteventchannel` first.")
+        await interaction.edit_original_response(content="No event channel set. Run `/seteventchannel` first.")
         return
 
     channel = await get_text_channel(channel_id)
     if channel is None:
-        await interaction.edit_original_response("I couldn't access the configured event channel.")
+        await interaction.edit_original_response(content="I couldn't access the configured event channel.")
         return
 
     bot_member = await get_bot_member(guild)
     if not bot_member:
-        await interaction.edit_original_response("I couldn't resolve my own permissions in this server.")
+        await interaction.edit_original_response(content="I couldn't resolve my own permissions in this server.")
         return
 
     ev = None
@@ -1448,7 +1495,7 @@ async def remindall(interaction: discord.Interaction, index: Optional[int] = Non
     if index is not None:
         ev = get_event_by_index(g, index)
         if not ev:
-            await interaction.edit_original_response("Invalid index. Use `/listevents`.")
+            await interaction.edit_original_response(content="Invalid index. Use `/listevents`.")
             return
         dt = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
     else:
@@ -1460,16 +1507,16 @@ async def remindall(interaction: discord.Interaction, index: Optional[int] = Non
                 break
 
     if not ev or not dt:
-        await interaction.edit_original_response("No upcoming event found to remind about.")
+        await interaction.edit_original_response(content="No upcoming event found to remind about.")
         return
 
     if ev.get("silenced", False):
-        await interaction.edit_original_response("That event is currently silenced (use `/silence` to toggle it back on).")
+        await interaction.edit_original_response(content="That event is currently silenced (use `/silence` to toggle it back on).")
         return
 
     desc, _, passed = compute_time_left(dt)
     if passed:
-        await interaction.edit_original_response("That event has already started or passed.")
+        await interaction.edit_original_response(content="That event has already started or passed.")
         return
 
     perms = channel.permissions_for(bot_member)
@@ -1494,12 +1541,12 @@ async def remindall(interaction: discord.Interaction, index: Optional[int] = Non
             missing=missing,
             action="send /remindall notifications",
         )
-        await interaction.edit_original_response(
+        await interaction.edit_original_response(content=
             "I don't have permission to send messages in the event channel."
         )
         return
 
-    await interaction.edit_original_response("✅ Reminder sent.")
+    await interaction.edit_original_response(content="✅ Reminder sent.")
 
 
 @bot.tree.command(name="setmilestones", description="Set custom milestone days for an event.")
@@ -1770,7 +1817,7 @@ async def archivepast(interaction: discord.Interaction):
         if ch:
             await rebuild_pinned_message(guild.id, ch, g)
 
-    await interaction.edit_original_response(f"🧹 Archived **{removed}** past event(s).")
+    await interaction.edit_original_response(content=f"🧹 Archived **{removed}** past event(s).")
 
 
 @bot.tree.command(name="resetchannel", description="Clear the configured event channel for this server.")
@@ -1848,7 +1895,7 @@ async def purgeevents(interaction: discord.Interaction, confirm: str):
     await interaction.response.defer(ephemeral=True)
     
     if (confirm or "").strip().upper() != "YES":
-        await interaction.edit_original_response("Not confirmed. To purge, run `/purgeevents confirm: YES`.")
+        await interaction.edit_original_response(content="Not confirmed. To purge, run `/purgeevents confirm: YES`.")
         return
 
     g = get_guild_state(guild.id)
@@ -1862,7 +1909,7 @@ async def purgeevents(interaction: discord.Interaction, confirm: str):
         if ch:
             await rebuild_pinned_message(guild.id, ch, g)
 
-    await interaction.edit_original_response("🧨 All events have been deleted for this server.")
+    await interaction.edit_original_response(content="🧨 All events have been deleted for this server.")
 
 
 @bot.tree.command(name="update_countdown", description="Force-refresh the pinned countdown.")
@@ -1879,13 +1926,13 @@ async def update_countdown_cmd(interaction: discord.Interaction):
 
     channel_id = g.get("event_channel_id")
     if not channel_id:
-        await interaction.edit_original_response(
+        await interaction.edit_original_response(content=
             "No events channel set yet. Run `/seteventchannel` first."
         )
         return
 
     if interaction.channel_id != channel_id:
-        await interaction.edit_original_response(
+        await interaction.edit_original_response(content=
             "Please run this command in the configured events channel."
         )
         return
@@ -1911,18 +1958,18 @@ async def update_countdown_cmd(interaction: discord.Interaction):
             missing=missing,
             action="edit/update the pinned countdown message",
         )
-        await interaction.edit_original_response(
+        await interaction.edit_original_response(content=
             "I don't have permission to edit that pinned message here. "
             "I’ve messaged the server owner with a permissions fix guide.",
         )
         return
     except discord.HTTPException as e:
-        await interaction.edit_original_response(
+        await interaction.edit_original_response(content=
             f"Discord errored while updating the pinned message: {e}",
         )
         return
 
-    await interaction.edit_original_response("⏱ Countdown updated.")
+    await interaction.edit_original_response(content="⏱ Countdown updated.")
 
 
 @bot.tree.command(name="resendsetup", description="Resend the onboarding/setup message.")
@@ -1939,7 +1986,7 @@ async def resendsetup(interaction: discord.Interaction):
     save_state()
 
     await send_onboarding_for_guild(guild)
-    await interaction.edit_original_response(
+    await interaction.edit_original_response(content=
         "📨 Setup instructions have been resent to the server owner (or a fallback channel)."
     )
 
