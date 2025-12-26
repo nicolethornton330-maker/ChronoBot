@@ -1896,7 +1896,7 @@ async def update_countdown_cmd(interaction: discord.Interaction):
     pinned = await get_or_create_pinned_message(guild.id, channel, allow_create=True)
     if pinned is None:
         await interaction.edit_original_response(
-            "I couldn't create or access the pinned countdown message here. Check my permissions.",
+            content="I couldn't create or access the pinned countdown message here. Check my permissions.",
         )
         return
 
