@@ -1037,12 +1037,13 @@ def chunk_text(text: str, limit: int = 1900) -> list[str]:
         chunks.append(text)
     return chunks
 
-
 def build_embed_for_guild(guild_state: dict) -> discord.Embed:
     sort_events(guild_state)
     events = guild_state.get("events", [])
     raw_theme = (guild_state.get("theme") or "default").lower()
     theme = normalize_theme_key(raw_theme)
+
+    SPACER = "\u200b"  # zero-width space line for “padding” in embeds
 
     # One accent color per embed — Discord rule
     THEME_PROFILES = {
@@ -1145,7 +1146,6 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
     def _meta_line(ev: dict) -> str:
         tags = []
 
-        # repeat
         repeat_every = ev.get("repeat_every_days")
         if isinstance(repeat_every, int) and repeat_every > 0:
             if theme == "hypebeast":
@@ -1155,7 +1155,6 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
             else:
                 tags.append(f"🔁 every {repeat_every}d")
 
-        # silenced
         if bool(ev.get("silenced", False)):
             if theme == "cutesy":
                 tags.append("🤫 quiet mode")
@@ -1164,19 +1163,12 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
             else:
                 tags.append("🔕 silenced")
 
-        # owner + creator (non-pinging)
         owner = ev.get("owner_name")
         creator = ev.get("created_by_name") or ev.get("owner_name")
         if isinstance(owner, str) and owner.strip():
-            if theme == "hypebeast":
-                tags.append(f"👑 {owner.strip()}")
-            else:
-                tags.append(f"👤 {owner.strip()}")
+            tags.append(f"👑 {owner.strip()}" if theme == "hypebeast" else f"👤 {owner.strip()}")
         if isinstance(creator, str) and creator.strip():
-            if theme == "arcade":
-                tags.append(f"🧾 {creator.strip()}")
-            else:
-                tags.append(f"📝 {creator.strip()}")
+            tags.append(f"🧾 {creator.strip()}" if theme == "arcade" else f"📝 {creator.strip()}")
 
         return " • ".join(tags)
 
@@ -1187,23 +1179,49 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
         meta = _meta_line(ev)
         meta_line = f"\n{meta}" if meta else ""
 
+        # Roomier layout: header, blank line, relative, date, meta, spacer
         if theme == "arcade":
-            return f"🟪🟦 **INSERT COIN** 🟦🟪\n⏱️ **{rel}**\n📅 {full}{meta_line}"
+            return (
+                f"🟪🟦 **INSERT COIN** 🟦🟪\n\n"
+                f"⏱️ **{rel}**\n"
+                f"📅 {full}"
+                f"{meta_line}\n{SPACER}"
+            )
         if theme == "hypebeast":
-            return f"💎 **NEXT DROP:** **{rel}**\n🗓️ {full}{meta_line}"
+            return (
+                f"💎 **NEXT DROP:** **{rel}**\n\n"
+                f"📅 {full}"
+                f"{meta_line}\n{SPACER}"
+            )
         if theme == "cutesy":
-            return f"✨ **Happens** {rel}\n📅 {full}\n🍓 stay cute, stay on time{meta_line}"
+            return (
+                f"✨ **Happens** {rel}\n\n"
+                f"📅 {full}\n"
+                f"🍓 stay cute, stay on time"
+                f"{meta_line}\n{SPACER}"
+            )
         if theme == "celebration":
-            return f"🎊 **Countdown:** **{rel}**\n📅 {full}{meta_line}"
+            return (
+                f"🎊 **Countdown:** **{rel}**\n\n"
+                f"📅 {full}"
+                f"{meta_line}\n{SPACER}"
+            )
         if theme == "spooky":
-            return f"🕯️ **The hour approaches:** **{rel}**\n📜 {full}{meta_line}"
+            return (
+                f"🕯️ **The hour approaches:** **{rel}**\n\n"
+                f"📜 {full}"
+                f"{meta_line}\n{SPACER}"
+            )
         if theme == "gaming":
-            return f"🏁 **Queue pop:** **{rel}**\n🗓️ {full}{meta_line}"
+            return (
+                f"🏁 **Queue pop:** **{rel}**\n\n"
+                f"🗓️ {full}"
+                f"{meta_line}\n{SPACER}"
+            )
 
-        # default fallback
-        return f"⏳ **{rel}**\n🗓️ {full}{meta_line}"
+        return f"⏳ **{rel}**\n\n🗓️ {full}{meta_line}\n{SPACER}"
 
-    # Minimalist mode: one clean list in the description area
+    # Minimalist mode: one clean list in the description area (with more breathing room)
     if profile.get("mode") == "list":
         lines = []
         for ev, dt in upcoming:
@@ -1213,9 +1231,14 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
             meta = _meta_line(ev)
             meta_txt = f" • {meta}" if meta else ""
             name = (ev.get("name", "Event") or "Event").strip()
-            lines.append(f"• **{name}** — {rel}\n  {full}{meta_txt}")
 
-        # Keep room for footer; don’t blow the 4096 description limit
+            # Extra newline between items for spacing
+            lines.append(
+                f"• **{name}** — **{rel}**\n"
+                f"  {full}{meta_txt}\n"
+                f"{SPACER}"
+            )
+
         body = "\n".join(lines)
         if len(body) > 3600:
             body = body[:3600].rsplit("\n", 1)[0] + "\n… (more events: use /listevents)"
@@ -1226,9 +1249,9 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
 
     # Fields mode: spotlight “Next Up” + then per-event fields
     next_ev, next_dt = upcoming[0]
-    next_name = (next_ev.get("name", "Event") or "Event")[:256]
+    next_name = (next_ev.get("name", "Event") or "Event").strip()
 
-    spotlight_name = {
+    spotlight_label = {
         "gaming": "🎯 NEXT QUEST",
         "arcade": "⭐ NEXT ROUND",
         "hypebeast": "🔥 NEXT DROP",
@@ -1238,9 +1261,11 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
         "default": "⭐ NEXT UP",
     }.get(theme, "⭐ NEXT UP")
 
+    # ✅ Put the EVENT NAME in the FIELD TITLE for emphasis
+    spotlight_title = f"{spotlight_label} — {next_name}"
     embed.add_field(
-        name=spotlight_name,
-        value=f"**{next_name}**\n{_event_value(next_ev, next_dt)}",
+        name=spotlight_title[:256],
+        value=_event_value(next_ev, next_dt)[:1024],
         inline=False,
     )
 
@@ -1252,7 +1277,7 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
             break
 
         name = (ev.get("name", "Event") or "Event").strip()
-        # Theme-flavored field name prefix
+
         prefix = ""
         if theme == "arcade":
             prefix = "🟩 "
@@ -1282,7 +1307,6 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
 
     embed.set_footer(text=_append_vote_footer(footer))
     return embed
-
 
 
 async def rebuild_pinned_message(guild_id: int, channel: discord.TextChannel, guild_state: dict):
