@@ -3,23 +3,24 @@ import json
 from pathlib import Path
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict
 import time
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 from threading import Lock
 import random
+import aiohttp
 
 # ==========================
 # CONFIG
 # ==========================
 
-VERSION = "2025-12-25-Functional-1+Autocomplete+AutoPrune"
+VERSION = "2025-12-28"
 
 DEFAULT_TZ = ZoneInfo("America/Chicago")
 UPDATE_INTERVAL_SECONDS = 60
-DEFAULT_MILESTONES = [100, 50, 30, 14, 7, 2, 1, 0]
+DEFAULT_MILESTONES = [100, 60, 30, 14, 7, 2, 1, 0]
 
 DATA_FILE = Path(os.getenv("CHROMIE_DATA_PATH", "/var/data/chromie_state.json"))
 TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
@@ -31,6 +32,10 @@ _last_log = {}  # (guild_id, code) -> last_time
 
 _STATE_LOCK = Lock()
 
+TOPGG_TOKEN = os.getenv("TOPGG_TOKEN", "").strip()
+TOPGG_BOT_ID = os.getenv("TOPGG_BOT_ID", "").strip()
+TOPGG_FAIL_OPEN = True  # if top.gg is down/misconfigured, don't brick premium commands
+    
 def log_throttled(guild_id: int, code: str, msg: str):
     key = (guild_id, code)
     now = time.time()
@@ -39,6 +44,103 @@ def log_throttled(guild_id: int, code: str, msg: str):
         _last_log[key] = now
         print(msg)
 
+# ==========================
+# TOP.GG VOTE GATING
+# ==========================
+
+_vote_cache: Dict[int, Tuple[float, bool]] = {}  # user_id -> (cached_at_monotonic, voted)
+VOTE_CACHE_TTL_SECONDS = 60  # keep short so votes register quickly
+_vote_ask_cooldown: Dict[int, float] = {}  # user_id -> last ask epoch
+VOTE_ASK_COOLDOWN_SECONDS = 60 * 60 * 24  # 24h
+
+async def maybe_vote_nudge(interaction: discord.Interaction, reason: str) -> None:
+    # Only nudge if they haven't voted
+    if await topgg_has_voted(interaction.user.id):
+        return
+
+    now = time.time()
+    last = _vote_ask_cooldown.get(interaction.user.id, 0)
+    if now - last < VOTE_ASK_COOLDOWN_SECONDS:
+        return
+
+    _vote_ask_cooldown[interaction.user.id] = now
+
+    msg = (
+        f"💜 {reason}\n"
+        "Voting unlocks supporter perks:\n"
+        "• /theme • /milestones advanced • /template save/load • /banner set • /digest enable"
+    )
+
+    # Use followup if already responded
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True, view=build_vote_view())
+    else:
+        await interaction.response.send_message(msg, ephemeral=True, view=build_vote_view())
+
+def build_vote_view() -> discord.ui.View:
+    view = discord.ui.View()
+    url = f"https://top.gg/bot/{TOPGG_BOT_ID}/vote" if TOPGG_BOT_ID else "https://top.gg"
+    view.add_item(discord.ui.Button(label="Vote on Top.gg", style=discord.ButtonStyle.link, url=url))
+    return view
+        
+async def topgg_has_voted(user_id: int) -> bool:
+    """
+    Returns True if user has voted on top.gg.
+    Uses a tiny cache to reduce API calls.
+    """
+    now = time.monotonic()
+    cached = _vote_cache.get(user_id)
+    if cached and (now - cached[0] <= VOTE_CACHE_TTL_SECONDS):
+        return cached[1]
+
+    # If misconfigured, choose behavior
+    if not TOPGG_TOKEN or not TOPGG_BOT_ID:
+        voted = True if TOPGG_FAIL_OPEN else False
+        _vote_cache[user_id] = (now, voted)
+        return voted
+
+    url = f"https://top.gg/api/bots/{TOPGG_BOT_ID}/check"
+    params = {"userId": str(user_id)}
+    headers = {"Authorization": TOPGG_TOKEN}
+    timeout = aiohttp.ClientTimeout(total=5)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, headers=headers, timeout=timeout) as resp:
+                if resp.status != 200:
+                    voted = True if TOPGG_FAIL_OPEN else False
+                else:
+                    data = await resp.json()
+                    voted = bool(data.get("voted") == 1)
+    except Exception:
+        voted = True if TOPGG_FAIL_OPEN else False
+
+    _vote_cache[user_id] = (now, voted)
+    return voted
+
+async def send_vote_required(interaction: discord.Interaction, feature_label: str) -> None:
+    content = (
+        f"🔒 **{feature_label}** is a supporter perk.\n\n"
+        f"{PREMIUM_PERKS_TEXT}\n\n"
+        "Vote on Top.gg, then run the command again 💜"
+    )
+    view = build_vote_view()
+
+    # Checks run before the command executes, so normally response isn't done yet.
+    if interaction.response.is_done():
+        await interaction.followup.send(content, ephemeral=True, view=view)
+    else:
+        await interaction.response.send_message(content, ephemeral=True, view=view)
+
+def require_vote(feature_label: str):
+    async def predicate(interaction: discord.Interaction) -> bool:
+        voted = await topgg_has_voted(interaction.user.id)
+        if voted:
+            return True
+
+        await send_vote_required(interaction, feature_label)
+        raise VoteRequired()
+
+    return app_commands.check(predicate)
 
 # ==========================
 # STATE HANDLING
@@ -77,6 +179,19 @@ State structure (high level):
 
 EVENT_START_GRACE_SECONDS = 60 * 60  # 1 hour: announce if bot wakes up within 1 hour after start
 
+PREMIUM_PERKS_TEXT = (
+    "Voting unlocks:\n"
+    "• /theme (premium themes)\n"
+    "• /milestones advanced\n"
+    "• /template save + /template load\n"
+    "• /banner set\n"
+    "• /digest enable"
+)
+
+class VoteRequired(app_commands.CheckFailure):
+    """Raised when a vote-locked command is used without a valid vote."""
+    pass
+    
 def build_event_start_blast(event_name: str) -> str:
     # Keep it short, loud, and celebratory.
     templates = [
@@ -153,6 +268,16 @@ def get_guild_state(guild_id: int) -> dict:
             # NEW (audit)
             "event_channel_set_by": None,
             "event_channel_set_at": None,
+
+            # NEW (supporter features)
+            "theme": "default",
+            "default_milestones": DEFAULT_MILESTONES.copy(),
+            "templates": {},  # { "name_key": {...template...} }
+            "digest": {
+                "enabled": False,
+                "channel_id": None,
+                "last_sent_date": None,  # "YYYY-MM-DD"
+            },
         }
 
     else:
@@ -163,6 +288,10 @@ def get_guild_state(guild_id: int) -> dict:
         guilds[gid].setdefault("welcomed", False)
         guilds[gid].setdefault("event_channel_set_by", None)
         guilds[gid].setdefault("event_channel_set_at", None)
+        guilds[gid].setdefault("theme", "default")
+        guilds[gid].setdefault("default_milestones", DEFAULT_MILESTONES.copy())
+        guilds[gid].setdefault("templates", {})
+        guilds[gid].setdefault("digest", {"enabled": False, "channel_id": None, "last_sent_date": None})
     return guilds[gid]
 
 
@@ -284,6 +413,10 @@ for _, g_state in state.get("guilds", {}).items():
     g_state.setdefault("mention_role_id", None)
     g_state.setdefault("event_channel_set_by", None)
     g_state.setdefault("event_channel_set_at", None)
+    g_state.setdefault("theme", "default")
+    g_state.setdefault("default_milestones", DEFAULT_MILESTONES.copy())
+    g_state.setdefault("templates", {})
+    g_state.setdefault("digest", {"enabled": False, "channel_id": None, "last_sent_date": None})
 
 
     for ev in g_state.get("events", []):
@@ -295,7 +428,7 @@ for _, g_state in state.get("guilds", {}).items():
         ev.setdefault("silenced", False)
         ev.setdefault("owner_user_id", None)
         ev.setdefault("start_announced", False)
-
+        ev.setdefault("banner_url", None)
 
     removed = prune_past_events(g_state, now=_boot_now)
     if removed:
@@ -323,6 +456,8 @@ class ChromieBot(commands.Bot):
 
         if not update_countdowns.is_running():
             update_countdowns.start()
+        if not weekly_digest_loop.is_running():
+            weekly_digest_loop.start()
 
 
 bot = ChromieBot(command_prefix="!", intents=intents)
@@ -572,7 +707,12 @@ async def send_onboarding_for_guild(guild: discord.Guild):
     if guild_state.get("welcomed"):
         return
 
-    contact_user = guild.owner or (await bot.fetch_user(guild.owner_id))
+    contact_user = guild.owner
+    if contact_user is None:
+        try:
+            contact_user = await bot.fetch_user(guild.owner_id)
+        except Exception:
+            contact_user = None
     mention = contact_user.mention if contact_user else ""
     milestone_str = ", ".join(str(x) for x in DEFAULT_MILESTONES)
 
@@ -627,6 +767,122 @@ async def send_onboarding_for_guild(guild: discord.Guild):
     guild_state["welcomed"] = True
     save_state()
 
+async def notify_owner_countdown_unpinned(
+    guild: discord.Guild,
+    channel: discord.TextChannel,
+    *,
+    reason: str,
+):
+    """
+    DM server owner once/day if the countdown message is NOT pinned
+    (e.g., someone unpinned it, pin limit reached, or Discord error).
+    """
+    guild_state = get_guild_state(guild.id)
+
+    # Reuse the persisted 1/day cooldown bucket
+    key = _perm_alert_key(guild.id, channel.id, f"countdown_unpinned|{reason}")
+    if not _should_send_perm_alert(guild_state, key):
+        return
+
+    ch_name = getattr(channel, "name", "this channel")
+    text = (
+        "📌 **ChronoBot notice: countdown message is not pinned**\n\n"
+        f"I found the countdown message in **#{ch_name}**, but it is currently **not pinned**.\n"
+        "That means it can scroll away and won’t stay at the top.\n\n"
+        "**How to fix:**\n"
+        "1) In that channel, make sure the bot has **Manage Messages** (pin/unpin)\n"
+        "2) If the channel has too many pinned messages, unpin one (Discord has a pin limit)\n\n"
+        "✅ Then run `/healthcheck` to confirm everything is fixed."
+    )
+
+    # Try DM owner
+    owner = guild.owner
+    if owner is None:
+        try:
+            owner = await bot.fetch_user(guild.owner_id)
+        except Exception:
+            owner = None
+
+    sent = False
+    if owner:
+        try:
+            await owner.send(text)
+            sent = True
+        except (discord.Forbidden, discord.HTTPException):
+            sent = False
+
+    # Fallback: system channel or first sendable channel
+    if not sent:
+        fallback = guild.system_channel
+        if fallback is None:
+            me = _bot_member_cached(guild)
+            for ch in guild.text_channels:
+                if me and ch.permissions_for(me).send_messages:
+                    fallback = ch
+                    break
+
+        if fallback:
+            try:
+                await fallback.send(text, allowed_mentions=discord.AllowedMentions.none())
+            except Exception:
+                pass
+
+    _mark_perm_alert_sent(guild_state, key)
+    save_state()
+
+
+async def ensure_countdown_pinned(
+    guild: discord.Guild,
+    channel: discord.TextChannel,
+    msg: discord.Message,
+    *,
+    perms: Optional[discord.Permissions] = None,
+):
+    """
+    If msg is not pinned, attempt to pin (if possible), otherwise DM the owner.
+    """
+    # Resolve perms if caller didn't provide them
+    if perms is None:
+        bot_member = await get_bot_member(guild)
+        if bot_member is None:
+            await notify_owner_missing_perms(
+                guild,
+                channel,
+                missing=list(RECOMMENDED_CHANNEL_PERMS),
+                action="pin the countdown message (it is currently unpinned)",
+            )
+            return
+        perms = channel.permissions_for(bot_member)
+
+    try:
+        if msg.pinned:
+            return
+    except Exception:
+        return
+
+    if not perms.manage_messages:
+        await notify_owner_missing_perms(
+            guild,
+            channel,
+            missing=["manage_messages"],
+            action="pin the countdown message (it is currently unpinned)",
+        )
+        return
+
+    try:
+        await msg.pin()
+    except discord.Forbidden:
+        await notify_owner_missing_perms(
+            guild,
+            channel,
+            missing=["manage_messages"],
+            action="pin the countdown message (it is currently unpinned)",
+        )
+    except discord.HTTPException:
+        await notify_owner_countdown_unpinned(guild, channel, reason="pin_failed_http")
+    except Exception:
+        await notify_owner_countdown_unpinned(guild, channel, reason="pin_failed_unknown")
+
 
 @bot.event
 async def on_ready():
@@ -646,6 +902,12 @@ async def on_guild_join(guild: discord.Guild):
 # ==========================
 MAX_EMBED_EVENTS = 25  # Discord embed field limit
 
+def _append_vote_footer(existing: Optional[str]) -> str:
+    tail = "💜 Support Chromie: /vote"
+    if not existing:
+        return tail
+    return f"{existing} • {tail}"
+
 def build_embed_for_guild(guild_state: dict) -> discord.Embed:
     sort_events(guild_state)
     events = guild_state.get("events", [])
@@ -656,9 +918,32 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
         color=EMBED_COLOR,
     )
 
+    theme = (guild_state.get("theme") or "default").lower()
+    if theme == "neon":
+        embed.title = "✨ Upcoming Event Countdowns ✨"
+    elif theme == "minimal":
+        embed.title = "Event Countdowns"
+        embed.description = "Upcoming events."
+    elif theme == "dramatic":
+        embed.title = "⏳ THE CLOCK IS HUNGRY ⏳"
+        embed.description = "Time is happening to all of us."
+
     if not events:
         embed.add_field(name="No events yet", value="Use `/addevent` to add one.", inline=False)
+        embed.set_footer(text=_append_vote_footer(None))
         return embed
+
+    # If the next upcoming event has a banner, show it as the embed image
+    now_dt = datetime.now(DEFAULT_TZ)
+    for ev in events:
+        ts = ev.get("timestamp")
+        if isinstance(ts, int):
+            dt = datetime.fromtimestamp(ts, tz=DEFAULT_TZ)
+            if dt > now_dt:
+                banner = ev.get("banner_url")
+                if isinstance(banner, str) and banner.strip():
+                    embed.set_image(url=banner.strip())
+                break
 
     shown = 0
     any_upcoming = False
@@ -688,22 +973,27 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
         shown += 1
 
     if len(events) > shown:
-        embed.set_footer(text=f"Showing {shown} of {len(events)} events. Use /listevents to view all.")
-
-    if not any_upcoming:
-        embed.set_footer(text="All listed events have already started or passed.")
+        embed.set_footer(text=_append_vote_footer(f"Showing {shown} of {len(events)} events. Use /listevents to view all."))
+    elif not any_upcoming:
+        embed.set_footer(text=_append_vote_footer("All listed events have already started or passed."))
+    else:
+        embed.set_footer(text=_append_vote_footer(None))
 
     return embed
 
-
 async def rebuild_pinned_message(guild_id: int, channel: discord.TextChannel, guild_state: dict):
     sort_events(guild_state)
+
     old_id = guild_state.get("pinned_message_id")
     if old_id:
         try:
             old_msg = await channel.fetch_message(int(old_id))
-            await old_msg.unpin()
-        except (discord.NotFound, discord.Forbidden):
+            try:
+                await old_msg.unpin()
+            except discord.Forbidden:
+                # Optional: alert owner you can't unpin (not critical)
+                pass
+        except (discord.NotFound, discord.HTTPException, discord.Forbidden):
             pass
 
     embed = build_embed_for_guild(guild_state)
@@ -722,18 +1012,15 @@ async def rebuild_pinned_message(guild_id: int, channel: discord.TextChannel, gu
     except discord.HTTPException:
         return None
 
+    # ✅ Single authority: ensure_countdown_pinned handles pin-or-owner-DM
     try:
-        await msg.pin()
-    except discord.Forbidden:
-        missing = missing_channel_perms(channel, channel.guild)
-        await notify_owner_missing_perms(
-            channel.guild,
-            channel,
-            missing=missing,
-            action="pin the countdown message",
-        )
-    except discord.HTTPException as e:
-        print(f"[Guild {guild_id}] Failed to pin message: {e}")
+        bot_member = await get_bot_member(channel.guild)
+        perms = channel.permissions_for(bot_member) if bot_member else None
+        await ensure_countdown_pinned(channel.guild, channel, msg, perms=perms)
+    except Exception:
+        # ensure_countdown_pinned should ideally swallow its own errors,
+        # but this keeps rebuild_pinned_message from ever crashing.
+        pass
 
     guild_state["pinned_message_id"] = msg.id
     save_state()
@@ -771,6 +1058,20 @@ async def get_or_create_pinned_message(
         )
         return None
 
+    if allow_create:
+        needed = []
+        if not perms.embed_links:
+            needed.append("embed_links")
+        if not perms.manage_messages:
+            needed.append("manage_messages")
+        if needed:
+            await notify_owner_missing_perms(
+                channel.guild,
+                channel,
+                missing=needed,
+                action="pin + display the countdown embed",
+            )
+
     if pinned_id:
         if not perms.read_message_history:
             missing = missing_channel_perms(channel, channel.guild)
@@ -783,7 +1084,9 @@ async def get_or_create_pinned_message(
             return None
 
         try:
-            return await channel.fetch_message(int(pinned_id))
+            msg = await channel.fetch_message(int(pinned_id))
+            await ensure_countdown_pinned(channel.guild, channel, msg, perms=perms)
+            return msg
         except discord.NotFound:
             guild_state["pinned_message_id"] = None
             save_state()
@@ -800,13 +1103,13 @@ async def get_or_create_pinned_message(
         except discord.HTTPException:
             return None
 
-    # ✅ IMPORTANT: don't auto-create unless caller asked us to
     if not allow_create:
         return None
 
     embed = build_embed_for_guild(guild_state)
     try:
         msg = await channel.send(embed=embed)
+        await ensure_countdown_pinned(channel.guild, channel, msg, perms=perms)
     except discord.Forbidden:
         missing = missing_channel_perms(channel, channel.guild)
         await notify_owner_missing_perms(
@@ -819,23 +1122,10 @@ async def get_or_create_pinned_message(
     except discord.HTTPException:
         return None
 
-    if perms.manage_messages:
-        try:
-            await msg.pin()
-        except discord.Forbidden:
-            missing = missing_channel_perms(channel, channel.guild)
-            await notify_owner_missing_perms(
-                channel.guild,
-                channel,
-                missing=missing,
-                action="pin the countdown message",
-            )
-        except Exception:
-            pass
-
     guild_state["pinned_message_id"] = msg.id
     save_state()
     return msg
+
 
 
 async def get_text_channel(channel_id: int) -> Optional[discord.TextChannel]:
@@ -881,6 +1171,23 @@ def build_milestone_mention(channel: discord.TextChannel, guild_state: dict) -> 
 
 def build_everyone_mention() -> Tuple[str, discord.AllowedMentions]:
     return "@everyone ", discord.AllowedMentions(everyone=True)
+
+async def refresh_countdown_message(guild: discord.Guild, guild_state: dict) -> None:
+    ch_id = guild_state.get("event_channel_id")
+    if not ch_id:
+        return
+    channel = await get_text_channel(int(ch_id))
+    if channel is None:
+        return
+
+    pinned = await get_or_create_pinned_message(guild.id, channel, allow_create=True)
+    if pinned is None:
+        return
+
+    try:
+        await pinned.edit(embed=build_embed_for_guild(guild_state))
+    except Exception:
+        pass
 
 
 # ==========================
@@ -937,6 +1244,65 @@ async def event_index_autocomplete(
 # ==========================
 # BACKGROUND LOOP
 # ==========================
+@tasks.loop(minutes=15)
+async def weekly_digest_loop():
+    # Send once each Monday any time after 9:00 AM local time.
+    now = datetime.now(DEFAULT_TZ)
+    if now.weekday() != 0:  # Monday = 0
+        return
+    if now.hour < 9:
+        return
+
+    today_str = now.date().isoformat()
+
+    for gid_str, guild_state in list(state.get("guilds", {}).items()):
+        try:
+            d = guild_state.get("digest")
+            if not isinstance(d, dict) or not d.get("enabled"):
+                continue
+            if d.get("last_sent_date") == today_str:
+                continue
+
+            ch_id = d.get("channel_id") or guild_state.get("event_channel_id")
+            if not ch_id:
+                continue
+
+            channel = await get_text_channel(int(ch_id))
+            if channel is None:
+                continue
+
+            sort_events(guild_state)
+
+            now_dt = datetime.now(DEFAULT_TZ)
+            cutoff_ts = int(now_dt.timestamp()) + (7 * 86400)
+
+            upcoming = []
+            for ev in guild_state.get("events", []):
+                ts = ev.get("timestamp")
+                if isinstance(ts, int) and ts > int(now_dt.timestamp()) and ts <= cutoff_ts:
+                    dt = datetime.fromtimestamp(ts, tz=DEFAULT_TZ)
+                    desc, _, _ = compute_time_left(dt)
+                    upcoming.append(
+                        f"• **{ev.get('name', 'Event')}** — {dt.strftime('%m/%d %I:%M %p')} ({desc})"
+                    )
+
+            text = "📬 **Weekly Digest (Next 7 days)**\n"
+            text += "\n".join(upcoming[:15]) if upcoming else "No events in the next 7 days."
+
+            await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
+
+            d["last_sent_date"] = today_str
+            guild_state["digest"] = d
+            save_state()
+
+        except Exception as e:
+            print(f"[Digest] guild {gid_str} failed: {type(e).__name__}: {e}")
+            continue
+
+
+@weekly_digest_loop.before_loop
+async def before_weekly_digest_loop():
+    await bot.wait_until_ready()
 
 @tasks.loop(seconds=UPDATE_INTERVAL_SECONDS)
 async def update_countdowns():
@@ -1160,12 +1526,25 @@ async def _safe_ephemeral(interaction: discord.Interaction, content: str):
     except Exception:
         pass
 
+@bot.tree.command(name="vote", description="Vote for Chromie on Top.gg to unlock supporter perks.")
+async def vote_cmd(interaction: discord.Interaction):
+    voted = await topgg_has_voted(interaction.user.id)
+    status = "✅ You currently have supporter access." if voted else "❌ You don’t have an active vote yet."
+
+    await interaction.response.send_message(
+        f"{status}\n\n{PREMIUM_PERKS_TEXT}",
+        ephemeral=True,
+        view=build_vote_view(),
+    )
 
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         await _safe_ephemeral(interaction, "You need **Manage Server** to use that command.")
         return
+    if isinstance(error, VoteRequired):
+        # We already responded in the check with the vote message.
+        return        
     if isinstance(error, app_commands.CheckFailure):
         await _safe_ephemeral(interaction, "You don’t have permission to use that command.")
         return
@@ -1300,6 +1679,42 @@ async def linkserver(interaction: discord.Interaction):
         ephemeral=True,
     )
 
+digest_group = app_commands.Group(name="digest", description="Weekly event digest")
+bot.tree.add_command(digest_group)
+
+@digest_group.command(name="enable", description="Enable the weekly digest (Supporter perk).")
+@require_vote("/digest enable")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def digest_enable_cmd(interaction: discord.Interaction):
+    guild = interaction.guild
+    assert guild is not None
+
+    g = get_guild_state(guild.id)
+    d = g.setdefault("digest", {"enabled": False, "channel_id": None, "last_sent_date": None})
+
+    ch_id = g.get("event_channel_id") or interaction.channel_id
+    d["enabled"] = True
+    d["channel_id"] = int(ch_id)
+    save_state()
+
+    await interaction.response.send_message("✅ Weekly digest enabled.", ephemeral=True)
+
+
+@digest_group.command(name="disable", description="Disable the weekly digest.")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def digest_disable_cmd(interaction: discord.Interaction):
+    guild = interaction.guild
+    assert guild is not None
+
+    g = get_guild_state(guild.id)
+    d = g.setdefault("digest", {"enabled": False, "channel_id": None, "last_sent_date": None})
+    d["enabled"] = False
+    save_state()
+
+    await interaction.response.send_message("🛑 Weekly digest disabled.", ephemeral=True)
+
 
 @bot.tree.command(name="addevent", description="Add a new event to the countdown.")
 @app_commands.describe(
@@ -1393,7 +1808,7 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
     event = {
         "name": name,
         "timestamp": int(dt.timestamp()),
-        "milestones": DEFAULT_MILESTONES.copy(),
+        "milestones": guild_state.get("default_milestones", DEFAULT_MILESTONES.copy()).copy(),
         "announced_milestones": [],
         "repeat_every_days": None,
         "repeat_anchor_date": None,
@@ -1401,6 +1816,7 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
         "silenced": False,
         "owner_user_id": None,
         "start_announced": False,
+        "banner_url": None,
     }
 
     guild_state["events"].append(event)
@@ -1411,11 +1827,12 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
     if channel_id:
         channel = await get_text_channel(channel_id)
         if channel is not None:
-            await rebuild_pinned_message(guild.id, channel, guild_state)
+            await refresh_countdown_message(guild, guild_state)
 
     await interaction.edit_original_response(content=
         f"✅ Added event **{name}** on {dt.strftime('%B %d, %Y at %I:%M %p %Z')} in server **{guild.name}**."
     )
+    await maybe_vote_nudge(interaction, "Event scheduled! If Chromie’s been useful, a Top.gg vote helps a ton.")
 
 
 @bot.tree.command(name="listevents", description="List all events for this server.")
@@ -1524,7 +1941,7 @@ async def removeevent(interaction: discord.Interaction, index: int):
     if channel_id:
         ch = await get_text_channel(channel_id)
         if ch:
-            await rebuild_pinned_message(guild.id, ch, guild_state)
+            await refresh_countdown_message(guild, guild_state)
 
     await interaction.edit_original_response(content=f"🗑 Removed event **{ev['name']}**.")
 
@@ -1546,6 +1963,7 @@ async def editevent(interaction: discord.Interaction, index: int, name: Optional
     await interaction.response.defer(ephemeral=True)
     
     g = get_guild_state(guild.id)
+    guild_state = g
     ev = get_event_by_index(g, index)
     if not ev:
         await interaction.edit_original_response(content="Invalid index. Use `/listevents`.")
@@ -1583,11 +2001,12 @@ async def editevent(interaction: discord.Interaction, index: int, name: Optional
     sort_events(g)
     save_state()
 
+    guild_state = g
     ch_id = g.get("event_channel_id")
     if ch_id:
         ch = await get_text_channel(ch_id)
         if ch:
-            await rebuild_pinned_message(guild.id, ch, g)
+            await refresh_countdown_message(guild, guild_state)
 
     dt_final = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
     await interaction.edit_original_response(content=
@@ -1613,6 +2032,7 @@ async def dupeevent(interaction: discord.Interaction, index: int, date: str, tim
     await interaction.response.defer(ephemeral=True)
 
     g = get_guild_state(guild.id)
+    guild_state = g
     sort_events(g)
     ev = get_event_by_index(g, index)
     if not ev:
@@ -1644,17 +2064,19 @@ async def dupeevent(interaction: discord.Interaction, index: int, date: str, tim
         "silenced": ev.get("silenced", False),
         "owner_user_id": ev.get("owner_user_id"),
         "start_announced": False,
+        "banner_url": ev.get("banner_url"),
     }
 
     g["events"].append(new_ev)
     sort_events(g)
     save_state()
 
+    guild_state = g
     ch_id = g.get("event_channel_id")
     if ch_id:
         ch = await get_text_channel(ch_id)
         if ch:
-            await rebuild_pinned_message(guild.id, ch, g)
+            await refresh_countdown_message(guild, guild_state)
 
     await interaction.edit_original_response(content=
         f"🧬 Duplicated event #{index} → added **{new_ev['name']}** on {dt.strftime('%B %d, %Y at %I:%M %p %Z')}."
@@ -1749,6 +2171,7 @@ async def remindall(interaction: discord.Interaction, index: Optional[int] = Non
         return
 
     await interaction.edit_original_response(content="✅ Reminder sent.")
+    await maybe_vote_nudge(interaction, "Reminder delivered. If you like Chromie’s vibe, a Top.gg vote unlocks supporter tools.")
 
 
 @bot.tree.command(name="setmilestones", description="Set custom milestone days for an event.")
@@ -1770,8 +2193,11 @@ async def setmilestones(interaction: discord.Interaction, index: int, milestones
         return
 
     parsed = parse_milestones(milestones)
-    if parsed is None or len(parsed) == 0:
-        await interaction.response.send_message("Invalid milestones. Use numbers like: `100, 50, 30, 14, 7, 2, 1, 0`.", ephemeral=True)
+    if not parsed:
+        await interaction.response.send_message(
+            "Invalid milestones. Use numbers like: `100, 50, 30, 14, 7, 2, 1, 0`.",
+            ephemeral=True,
+        )
         return
 
     ev["milestones"] = parsed
@@ -1782,6 +2208,177 @@ async def setmilestones(interaction: discord.Interaction, index: int, milestones
         f"✅ Updated milestones for **{ev['name']}**: {', '.join(str(x) for x in parsed)}",
         ephemeral=True,
     )
+    
+milestones_group = app_commands.Group(name="milestones", description="Milestone settings (Supporter perk)")
+bot.tree.add_command(milestones_group)
+
+@milestones_group.command(name="advanced", description="Set server default milestones (Supporter perk).")
+@app_commands.describe(
+    milestones="Comma/space-separated days (example: 100, 60, 30, 14, 7, 2, 1, 0)",
+    apply_to_all="Also apply this list to all existing events",
+)
+@require_vote("/milestones advanced")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def milestones_advanced_cmd(interaction: discord.Interaction, milestones: str, apply_to_all: bool = False):
+    guild = interaction.guild
+    assert guild is not None
+
+    parsed = parse_milestones(milestones)
+    if not parsed:
+        await interaction.response.send_message("Invalid milestones format.", ephemeral=True)
+        return
+
+    g = get_guild_state(guild.id)
+    g["default_milestones"] = parsed
+
+    if apply_to_all:
+        for ev in g.get("events", []):
+            ev["milestones"] = parsed.copy()
+            ev["announced_milestones"] = []
+
+    save_state()
+    await interaction.response.send_message(
+        f"✅ Server default milestones set to: {', '.join(str(x) for x in parsed)}"
+        + (" (applied to all events)" if apply_to_all else ""),
+        ephemeral=True,
+    )
+
+
+template_group = app_commands.Group(name="template", description="Event templates (Supporter perk)")
+bot.tree.add_command(template_group)
+
+@template_group.command(name="save", description="Save an event as a template (Supporter perk).")
+@app_commands.describe(index="Event number from /listevents", name="Template name")
+@app_commands.autocomplete(index=event_index_autocomplete)
+@require_vote("/template save")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def template_save_cmd(interaction: discord.Interaction, index: int, name: str):
+    guild = interaction.guild
+    assert guild is not None
+
+    g = get_guild_state(guild.id)
+    ev = get_event_by_index(g, index)
+    if not ev:
+        await interaction.response.send_message("Invalid index. Use /listevents.", ephemeral=True)
+        return
+
+    key = (name or "").strip().lower()
+    if not key:
+        await interaction.response.send_message("Template name can’t be empty.", ephemeral=True)
+        return
+
+    templates = g.setdefault("templates", {})
+    templates[key] = {
+        "display_name": name.strip(),
+        "milestones": (ev.get("milestones") or DEFAULT_MILESTONES).copy(),
+        "repeat_every_days": ev.get("repeat_every_days"),
+        "silenced": bool(ev.get("silenced", False)),
+    }
+    save_state()
+
+    await interaction.response.send_message(f"✅ Saved template **{name.strip()}**.", ephemeral=True)
+
+
+@template_group.command(name="load", description="Create a new event from a template (Supporter perk).")
+@app_commands.describe(
+    name="Template name",
+    date="MM/DD/YYYY",
+    time="24-hour HH:MM",
+    event_name="Name for the new event",
+)
+@require_vote("/template load")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def template_load_cmd(interaction: discord.Interaction, name: str, date: str, time: str, event_name: str):
+    guild = interaction.guild
+    assert guild is not None
+
+    g = get_guild_state(guild.id)
+    guild_state = g
+    templates = g.get("templates", {})
+    key = (name or "").strip().lower()
+    tpl = templates.get(key)
+    if not tpl:
+        await interaction.response.send_message("Template not found. Use /template save first.", ephemeral=True)
+        return
+
+    try:
+        dt = datetime.strptime(f"{date} {time}", "%m/%d/%Y %H:%M").replace(tzinfo=DEFAULT_TZ)
+    except ValueError:
+        await interaction.response.send_message("Invalid date/time. Use MM/DD/YYYY + 24-hour HH:MM.", ephemeral=True)
+        return
+
+    if dt <= datetime.now(DEFAULT_TZ):
+        await interaction.response.send_message("That date/time is in the past. Choose a future time.", ephemeral=True)
+        return
+
+    new_ev = {
+        "name": event_name,
+        "timestamp": int(dt.timestamp()),
+        "milestones": list(tpl.get("milestones") or DEFAULT_MILESTONES),
+        "announced_milestones": [],
+        "repeat_every_days": tpl.get("repeat_every_days"),
+        "repeat_anchor_date": None,
+        "announced_repeat_dates": [],
+        "silenced": bool(tpl.get("silenced", False)),
+        "owner_user_id": None,
+        "start_announced": False,
+        "banner_url": None,
+    }
+
+    g["events"].append(new_ev)
+    sort_events(g)
+    save_state()
+    guild_state = g
+    ch_id = g.get("event_channel_id")
+    if ch_id:
+        ch = await get_text_channel(int(ch_id))
+        if ch:
+            await refresh_countdown_message(guild, guild_state)
+
+    await interaction.response.send_message(
+        f"✅ Created **{event_name}** from template **{tpl.get('display_name', name)}**.",
+        ephemeral=True,
+    )
+
+banner_group = app_commands.Group(name="banner", description="Event banners (Supporter perk)")
+bot.tree.add_command(banner_group)
+
+@banner_group.command(name="set", description="Set a banner image for an event (Supporter perk).")
+@app_commands.describe(index="Event number from /listevents", url="Direct image URL (https://...)")
+@app_commands.autocomplete(index=event_index_autocomplete)
+@require_vote("/banner set")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def banner_set_cmd(interaction: discord.Interaction, index: int, url: str):
+    guild = interaction.guild
+    assert guild is not None
+
+    g = get_guild_state(guild.id)
+    guild_state = g
+    ev = get_event_by_index(g, index)
+    if not ev:
+        await interaction.response.send_message("Invalid index.", ephemeral=True)
+        return
+
+    u = (url or "").strip()
+    if not (u.startswith("https://") or u.startswith("http://")):
+        await interaction.response.send_message("Banner URL must start with http:// or https://", ephemeral=True)
+        return
+
+    ev["banner_url"] = u
+    save_state()
+    
+    guild_state = g
+    ch_id = g.get("event_channel_id")
+    if ch_id:
+        ch = await get_text_channel(int(ch_id))
+        if ch:
+            await refresh_countdown_message(guild, guild_state)
+
+    await interaction.response.send_message(f"✅ Banner set for event #{index}.", ephemeral=True)
 
 
 @bot.tree.command(name="resetmilestones", description="Restore default milestone days for an event.")
@@ -1799,12 +2396,15 @@ async def resetmilestones(interaction: discord.Interaction, index: int):
         await interaction.response.send_message("Invalid index. Use `/listevents`.", ephemeral=True)
         return
 
-    ev["milestones"] = DEFAULT_MILESTONES.copy()
+    defaults = g.get("default_milestones")
+    if not isinstance(defaults, list) or not defaults:
+        defaults = DEFAULT_MILESTONES
+    ev["milestones"] = list(defaults)
     ev["announced_milestones"] = []
     save_state()
 
     await interaction.response.send_message(
-        f"✅ Milestones reset for **{ev['name']}** to defaults: {', '.join(str(x) for x in DEFAULT_MILESTONES)}",
+        f"✅ Milestones reset for **{ev['name']}** to defaults: {', '.join(str(x) for x in defaults)}",
         ephemeral=True,
     )
 
@@ -2003,6 +2603,7 @@ async def archivepast(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     
     g = get_guild_state(guild.id)
+    guild_state = g
     sort_events(g)
 
     now = datetime.now(DEFAULT_TZ)
@@ -2012,12 +2613,13 @@ async def archivepast(interaction: discord.Interaction):
     removed = before - after
 
     save_state()
-
+    
+    guild_state = g
     ch_id = g.get("event_channel_id")
     if ch_id:
         ch = await get_text_channel(ch_id)
         if ch:
-            await rebuild_pinned_message(guild.id, ch, g)
+            await refresh_countdown_message(guild, guild_state)
 
     await interaction.edit_original_response(content=f"🧹 Archived **{removed}** past event(s).")
 
@@ -2105,11 +2707,12 @@ async def purgeevents(interaction: discord.Interaction, confirm: str):
     g["pinned_message_id"] = None
     save_state()
 
+    guild_state = g
     ch_id = g.get("event_channel_id")
     if ch_id:
         ch = await get_text_channel(ch_id)
         if ch:
-            await rebuild_pinned_message(guild.id, ch, g)
+            await refresh_countdown_message(guild, guild_state)
 
     await interaction.edit_original_response(content="🧨 All events have been deleted for this server.")
 
@@ -2191,6 +2794,40 @@ async def resendsetup(interaction: discord.Interaction):
     await interaction.edit_original_response(content=
         "📨 Setup instructions have been resent to the server owner (or a fallback channel)."
     )
+
+THEMES = ["default", "neon", "minimal", "dramatic"]
+
+@bot.tree.command(name="theme", description="Set the pinned countdown theme (Supporter perk).")
+@app_commands.describe(theme="Theme name")
+@require_vote("/theme")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def theme_cmd(interaction: discord.Interaction, theme: str):
+    guild = interaction.guild
+    assert guild is not None
+
+    t = (theme or "").strip().lower()
+    if t not in THEMES:
+        await interaction.response.send_message(
+            f"Unknown theme. Options: {', '.join(THEMES)}",
+            ephemeral=True,
+        )
+        return
+
+    g = get_guild_state(guild.id)
+    guild_state = g
+    g["theme"] = t
+    save_state()
+
+    # Refresh pinned embed (if configured)
+    ch_id = g.get("event_channel_id")
+    guild_state = g
+    if ch_id:
+        ch = await get_text_channel(int(ch_id))
+        if ch:
+            await refresh_countdown_message(guild, guild_state)
+
+    await interaction.response.send_message(f"✅ Theme set to **{t}**.", ephemeral=True)
 
 
 @bot.tree.command(name="chronohelp", description="Show ChronoBot setup & command help.")
