@@ -25,6 +25,9 @@ DEFAULT_MILESTONES = [100, 60, 30, 14, 7, 2, 1, 0]
 DATA_FILE = Path(os.getenv("CHROMIE_DATA_PATH", "/var/data/chromie_state.json"))
 TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 
+FAQ_URL = "https://nicolethornton330-maker.github.io/chronobot-faq/"
+SUPPORT_SERVER_URL = os.getenv("CHROMIE_SUPPORT_SERVER_URL", "").strip()  # set in Render/hosting env
+
 EMBED_COLOR = discord.Color.from_rgb(140, 82, 255)  # ChronoBot purple
 
 LOG_THROTTLE_SECONDS = 60 * 30  # 30 minutes
@@ -906,6 +909,137 @@ def _append_vote_footer(existing: Optional[str]) -> str:
     if not existing:
         return tail
     return f"{existing} • {tail}"
+    
+def build_chronohelp_embed() -> discord.Embed:
+    e = discord.Embed(
+        title="ChronoBot Help 🕒✨",
+        description=(
+            "Chromie pins a clean countdown list and posts reminders in your configured event channel.\n"
+            "**Tip:** Use `/listevents` (or autocomplete) to grab the right `index:` fast."
+        ),
+        color=EMBED_COLOR,
+    )
+
+    e.add_field(
+        name="Setup",
+        value=(
+            "• `/seteventchannel` — choose where the pinned countdown lives\n"
+            "• `/addevent` — add an event (MM/DD/YYYY + 24-hour HH:MM)\n"
+            "• `/healthcheck` — verify permissions + configuration"
+        ),
+        inline=False,
+    )
+
+    e.add_field(
+        name="Browse",
+        value=(
+            "• `/listevents` — list events (with index numbers)\n"
+            "• `/nextevent` — show the next upcoming event\n"
+            "• `/eventinfo index:` — details for one event"
+        ),
+        inline=False,
+    )
+
+    e.add_field(
+        name="Edit & organize",
+        value=(
+            "• `/editevent index:` — edit name/date/time\n"
+            "• `/dupeevent index: date:` — duplicate an event (optional time/name)\n"
+            "• `/removeevent index:` — delete an event"
+        ),
+        inline=False,
+    )
+
+    e.add_field(
+        name="Reminders",
+        value=(
+            "• `/remindall` — manually post a reminder (admin)\n"
+            "• `/setmilestones index: milestones:` — custom milestone days\n"
+            "• `/resetmilestones index:` — restore default milestones\n"
+            "• `/silence index:` — stop reminders for an event (keeps it listed)\n"
+            "• `/setrepeat index: every_days:` — repeating reminders (daily/weekly/etc.)\n"
+            "• `/clearrepeat index:` — turn repeating reminders off"
+        ),
+        inline=False,
+    )
+
+    e.add_field(
+        name="Owner DMs",
+        value=(
+            "• `/seteventowner index: user:` — assign an owner (they get milestone/repeat DMs)\n"
+            "• `/cleareventowner index:` — remove the owner"
+        ),
+        inline=False,
+    )
+
+    e.add_field(
+        name="Supporter perks (vote unlocks 💜)",
+        value=(
+            "• `/vote` — check status + get the vote link\n"
+            "• `/theme` — change the look of the pinned countdown (match your server vibe)\n"
+            "• `/milestones advanced` — set server-wide default milestones (optionally apply to all events)\n"
+            "• `/template save` + `/template load` — reuse event settings (fast setup for repeating formats)\n"
+            "• `/banner set` — add a banner image to an event (polished pinned embed)\n"
+            "• `/digest enable` / `/digest disable` — weekly Monday “next 7 days” summary"
+        ),
+        inline=False,
+    )
+
+    e.add_field(
+        name="Maintenance",
+        value=(
+            "• Past events auto-delete after they pass ✅\n"
+            "• `/archivepast` — manual cleanup (rare now)\n"
+            "• `/resetchannel` — clear configured countdown channel\n"
+            "• `/purgeevents confirm: YES` — delete all events for this server\n"
+            "• `/update_countdown` — force-refresh the pinned countdown\n"
+            "• `/resendsetup` — resend the onboarding message"
+        ),
+        inline=False,
+    )
+
+    e.add_field(
+        name="Optional: DM control",
+        value=(
+            "• `/linkserver` — link your DMs to this server (Manage Server required)\n"
+            "• Then DM me `/addevent` to add events remotely"
+        ),
+        inline=False,
+    )
+
+    # Footer / support links
+    support_lines = []
+    if SUPPORT_SERVER_URL:
+        support_lines.append(f"Support Discord: {SUPPORT_SERVER_URL}")
+    if FAQ_URL:
+        support_lines.append(f"FAQ: {FAQ_URL}")
+
+    if support_lines:
+        e.set_footer(text=" • ".join(support_lines))
+
+    return e
+
+
+def chunk_text(text: str, limit: int = 1900) -> list[str]:
+    """
+    Split text into Discord-safe chunks.
+    Uses newlines when possible so it doesn't chop in the middle of a line.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ["(no help text)"]
+
+    chunks: list[str] = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit)
+        if cut == -1 or cut < int(limit * 0.6):
+            cut = limit
+        chunks.append(text[:cut].rstrip())
+        text = text[cut:].lstrip("\n").lstrip()
+    if text:
+        chunks.append(text)
+    return chunks
+
 
 def build_embed_for_guild(guild_state: dict) -> discord.Embed:
     sort_events(guild_state)
@@ -2973,68 +3107,8 @@ async def theme_cmd(interaction: discord.Interaction, theme: str):
 
 @bot.tree.command(name="chronohelp", description="Show ChronoBot setup & command help.")
 async def chronohelp(interaction: discord.Interaction):
-    text = (
-        "**ChronoBot – Setup & Commands**\n\n"
-        "Most slash command responses are ephemeral (only you see them).\n"
-        "Milestone/repeat reminders post in the configured event channel.\n\n"
-        "**Tip:** Use `/listevents` to see event numbers for any command that needs `index:` "
-        "(or just start typing and pick from the autocomplete list).\n\n"
-
-        "**Setup**\n"
-        "• `/seteventchannel` – pick the channel where the pinned countdown lives\n"
-        "• `/addevent` – add an event (MM/DD/YYYY + 24-hour HH:MM)\n\n"
-
-        "**Browse**\n"
-        "• `/listevents` – list events\n"
-        "• `/nextevent` – show the next upcoming event\n"
-        "• `/eventinfo index:` – details for one event\n\n"
-
-        "**Edit & organize**\n"
-        "• `/editevent index:` – edit name/date/time\n"
-        "• `/dupeevent index: date:` – duplicate an event (optional time/name)\n"
-        "• `/removeevent index:` – delete an event\n\n"
-
-        "**Repeating reminders (every X days)**\n"
-        "• `/setrepeat index: every_days:` – turn on repeating reminders (1 = daily, 7 = weekly)\n"
-        "• `/clearrepeat index:` – turn repeating reminders off\n\n"
-
-        "**Milestones & notifications**\n"
-        "• `/remindall` – send a notification to the channel about an event\n"
-        "• `/setmilestones index: milestones:` – set custom milestone days\n"
-        "• `/resetmilestones index:` – restore default milestones\n"
-        "• `/silence index:` – stop reminders for an event (keeps it listed)\n"
-        "• `/seteventowner index: user:` – assign an owner (they get reminder DMs)\n"
-        "• `/cleareventowner index:` – remove the owner\n"
-        "• `/setmentionrole role:` – @mention a role on milestone posts\n"
-        "• `/clearmentionrole` – stop role mentions\n\n"
-
-        "**Supporter perks (vote unlocks)**\n"
-        "Vote doesn’t cost anything — it helps Chromie grow and unlocks extra tools:\n"
-        "• `/theme` – change the look of the pinned countdown (neon/minimal/dramatic styles)\n"
-        "• `/milestones advanced` – set server-wide default milestone days (and optionally apply to all events)\n"
-        "• `/template save` – save an event’s settings as a reusable template\n"
-        "• `/template load` – create a new event from a template (fast setup for repeating formats)\n"
-        "• `/banner set` – add an image banner for an event (the next upcoming event’s banner displays in the pinned embed)\n"
-        "• `/digest enable` – weekly Monday digest of events in the next 7 days (great for catch-ups)\n"
-        "• `/digest disable` – turn the weekly digest off\n"
-        "• `/vote` – check your supporter status + get the vote link\n\n"
-
-        "**Maintenance**\n"
-        "• Past events auto-delete after they pass ✅\n"
-        "• `/archivepast` – manual cleanup (rarely needed now)\n"
-        "• `/resetchannel` – clear the configured channel\n"
-        "• `/healthcheck` – show config + permission diagnostics\n"
-        "• `/purgeevents confirm: YES` – delete all events for this server\n"
-        "• `/update_countdown` – force-refresh the pinned countdown\n"
-        "• `/resendsetup` – resend setup instructions\n\n"
-
-        "**Optional: DM control**\n"
-        "• `/linkserver` – link your DMs to this server (Manage Server required)\n"
-        "• Then DM me `/addevent` to add events remotely\n"
-    )
-
-
-    await interaction.response.send_message(text, ephemeral=True)
+    embed = build_chronohelp_embed()
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 # ==========================
