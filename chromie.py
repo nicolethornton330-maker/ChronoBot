@@ -991,28 +991,25 @@ def build_chronohelp_embed() -> discord.Embed:
         ),
         inline=False,
     )
+    links = []
+    if SUPPORT_SERVER_URL:
+        links.append(f"• Support Discord — {SUPPORT_SERVER_URL}")
+    if FAQ_URL:
+        links.append(f"• Chromie FAQ — {FAQ_URL}")
+
+    extra = ("\n" + "\n".join(links)) if links else ""
 
     e.add_field(
         name="Optional: DM control",
         value=(
             "• `/linkserver` — link your DMs to this server (Manage Server required)\n"
             "• Then DM me `/addevent` to add events remotely"
+            + extra
         ),
         inline=False,
     )
 
-    # Footer / support links
-    support_lines = []
-    if SUPPORT_SERVER_URL:
-        support_lines.append(f"Support Discord: {SUPPORT_SERVER_URL}")
-    if FAQ_URL:
-        support_lines.append(f"FAQ: {FAQ_URL}")
-
-    if support_lines:
-        e.set_footer(text=" • ".join(support_lines))
-
-    return e
-
+    return e    
 
 def chunk_text(text: str, limit: int = 1900) -> list[str]:
     """
