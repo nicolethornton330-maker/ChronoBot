@@ -752,14 +752,34 @@ async def get_or_create_pinned_message(
 
     bot_member = await get_bot_member(channel.guild)
     if bot_member is None:
+        await notify_owner_missing_perms(
+            channel.guild,
+            channel,
+            missing=list(RECOMMENDED_CHANNEL_PERMS),
+            action="resolve bot permissions to update the countdown",
+        )
         return None
 
     perms = channel.permissions_for(bot_member)
     if not perms.view_channel or not perms.send_messages:
+        missing = missing_channel_perms(channel, channel.guild)
+        await notify_owner_missing_perms(
+            channel.guild,
+            channel,
+            missing=missing,
+            action="access the event channel to send/update the countdown",
+        )
         return None
 
     if pinned_id:
         if not perms.read_message_history:
+            missing = missing_channel_perms(channel, channel.guild)
+            await notify_owner_missing_perms(
+                channel.guild,
+                channel,
+                missing=missing,
+                action="read message history to access/update the pinned countdown message",
+            )
             return None
 
         try:
@@ -769,10 +789,18 @@ async def get_or_create_pinned_message(
             save_state()
             pinned_id = None
         except discord.Forbidden:
+            missing = missing_channel_perms(channel, channel.guild)
+            await notify_owner_missing_perms(
+                channel.guild,
+                channel,
+                missing=missing,
+                action="access the pinned countdown message",
+            )
             return None
         except discord.HTTPException:
             return None
 
+    # ✅ IMPORTANT: don't auto-create unless caller asked us to
     if not allow_create:
         return None
 
