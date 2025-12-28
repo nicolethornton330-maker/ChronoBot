@@ -88,52 +88,39 @@ def build_vote_view() -> discord.ui.View:
         
 TOPGG_API_V1_BASE = "https://top.gg/api/v1"
 
+TOPGG_API_BASE = "https://top.gg/api"
+
 async def topgg_has_voted(user_id: int) -> bool:
-    """
-    Returns True if user has voted on top.gg.
-    Uses Top.gg API v1:
-      GET /api/v1/projects/@me/votes/:user_id
-    200 => voted
-    404 => not voted
-    Other => fail open/closed (TOPGG_FAIL_OPEN)
-    """
     now = time.monotonic()
     cached = _vote_cache.get(user_id)
     if cached and (now - cached[0] <= VOTE_CACHE_TTL_SECONDS):
         return cached[1]
 
-    # If misconfigured, choose behavior
-    # (v1 vote check does NOT require TOPGG_BOT_ID)
-    if not TOPGG_TOKEN:
+    # Need BOTH token + bot id for the documented check endpoint
+    if not TOPGG_TOKEN or not TOPGG_BOT_ID:
         voted = True if TOPGG_FAIL_OPEN else False
         _vote_cache[user_id] = (now, voted)
         return voted
 
-    url = f"{TOPGG_API_V1_BASE}/projects/@me/votes/{user_id}"
-
-    tok = TOPGG_TOKEN.strip()
-    auth_value = tok if tok.lower().startswith("bearer ") else f"Bearer {tok}"
-    headers = {"Authorization": auth_value}
-
+    url = f"{TOPGG_API_BASE}/bots/{TOPGG_BOT_ID}/check"
+    headers = {"Authorization": TOPGG_TOKEN.strip()}  # no Bearer
+    params = {"userId": str(user_id)}
     timeout = aiohttp.ClientTimeout(total=6)
 
     try:
-        async with aiohttp.ClientSession() as session:
-            params = {"source": "discord"}  # IMPORTANT: you are passing a Discord user ID
-            async with session.get(url, headers=headers, params=params, timeout=timeout) as resp:
-
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers=headers, params=params) as resp:
                 if resp.status == 200:
-                    voted = True
-                elif resp.status == 404:
-                    voted = False
+                    data = await resp.json(content_type=None)
+                    voted = bool(int(data.get("voted", 0) or 0))
                 else:
-                    # Any other HTTP status: treat as fail-open/closed
                     voted = True if TOPGG_FAIL_OPEN else False
     except Exception:
         voted = True if TOPGG_FAIL_OPEN else False
 
     _vote_cache[user_id] = (now, voted)
     return voted
+
 
 
 async def send_vote_required(interaction: discord.Interaction, feature_label: str) -> None:
