@@ -2447,19 +2447,52 @@ async def milestones_advanced_cmd(interaction: discord.Interaction, milestones: 
         return
 
     g = get_guild_state(guild.id)
+
+    # Capture the old defaults BEFORE we overwrite them
+    old_defaults = g.get("default_milestones")
+    if not isinstance(old_defaults, list) or not old_defaults:
+        old_defaults = DEFAULT_MILESTONES
+
     g["default_milestones"] = parsed
 
-    if apply_to_all:
-        for ev in g.get("events", []):
+    updated = 0
+    events = g.get("events", [])
+    if not isinstance(events, list):
+        events = []
+        g["events"] = events
+
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+
+        # Always reset announced milestones when changing milestone lists
+        def _apply():
+            nonlocal updated
             ev["milestones"] = parsed.copy()
             ev["announced_milestones"] = []
+            updated += 1
+
+        if apply_to_all:
+            _apply()
+        else:
+            # Only update events that were still using the old default list
+            cur = ev.get("milestones")
+            if (not isinstance(cur, list) or not cur) or cur == old_defaults:
+                _apply()
 
     save_state()
-    await interaction.response.send_message(
-        f"✅ Server default milestones set to: {', '.join(str(x) for x in parsed)}"
-        + (" (applied to all events)" if apply_to_all else ""),
-        ephemeral=True,
+
+    note = (
+        f"✅ Server default milestones set to: {', '.join(str(x) for x in parsed)}\n"
+        f"Updated **{updated}** existing event(s). "
     )
+    if not apply_to_all:
+        note += "(Only events using the *previous defaults* were updated — customized events were left alone.)"
+    else:
+        note += "(Applied to all events.)"
+
+    await interaction.response.send_message(note, ephemeral=True)
+
 
 
 template_group = app_commands.Group(name="template", description="Event templates (Supporter perk)")
