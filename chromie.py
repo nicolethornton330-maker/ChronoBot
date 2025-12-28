@@ -2631,6 +2631,46 @@ async def banner_set_cmd(interaction: discord.Interaction, index: int, url: str)
 
     await interaction.response.send_message(f"✅ Banner set for event #{index}.", ephemeral=True)
 
+@banner_group.command(name="clear", description="Remove a banner image from an event (Supporter perk).")
+@app_commands.describe(index="Event number from /listevents")
+@app_commands.autocomplete(index=event_index_autocomplete)
+@require_vote("/banner clear")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def banner_clear_cmd(interaction: discord.Interaction, index: int):
+    guild = interaction.guild
+    assert guild is not None
+
+    g = get_guild_state(guild.id)
+    guild_state = g
+    ev = get_event_by_index(g, index)
+    if not ev:
+        await interaction.response.send_message("Invalid index.", ephemeral=True)
+        return
+
+    # If nothing to clear, be friendly and exit
+    if not ev.get("banner_url"):
+        await interaction.response.send_message(
+            f"🧼 Event #{index} (**{ev.get('name','Event')}**) doesn’t have a banner set.",
+            ephemeral=True,
+        )
+        return
+
+    ev["banner_url"] = None
+    save_state()
+
+    # Refresh pinned embed so the image disappears immediately
+    ch_id = g.get("event_channel_id")
+    if ch_id:
+        ch = await get_text_channel(int(ch_id))
+        if ch:
+            await refresh_countdown_message(guild, guild_state)
+
+    await interaction.response.send_message(
+        f"✅ Banner removed for event #{index} (**{ev.get('name','Event')}**).",
+        ephemeral=True,
+    )
+
 
 @bot.tree.command(name="resetmilestones", description="Restore default milestone days for an event.")
 @app_commands.describe(index="The number shown in /listevents (1, 2, 3, ...)")
