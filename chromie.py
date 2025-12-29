@@ -2813,7 +2813,7 @@ async def weekly_digest_loop():
                 ts = ev.get("timestamp")
                 if isinstance(ts, int) and ts > int(now_dt.timestamp()) and ts <= cutoff_ts:
                     dt = datetime.fromtimestamp(ts, tz=DEFAULT_TZ)
-                    desc, _, _ = compute_time_left(dt)
+                    desc, _, _ = compute_time_left(now_dt, dt)
                     upcoming.append(
                         f"• **{ev.get('name', 'Event')}** — {dt.strftime('%m/%d %I:%M %p')} ({desc})"
                     )
@@ -2928,7 +2928,7 @@ async def update_countdowns():
                     continue  # don’t do milestones/repeats for started/past events
 
                 # ---- Milestones + repeating reminders ----
-                desc, _, passed = compute_time_left(dt)
+                desc, _, passed = compute_time_left(not_dt, dt)
                 if passed:
                     continue
 
@@ -3590,7 +3590,7 @@ async def nextevent(interaction: discord.Interaction):
         return
 
     ev, dt = next_ev
-    desc, _, _ = compute_time_left(dt)
+    desc, _, _ = compute_time_left(now_dt, dt)
     await interaction.response.send_message(
         f"⏭️ Next event: **{ev['name']}**\n"
         f"🗓️ {dt.strftime('%B %d, %Y at %I:%M %p %Z')}\n"
@@ -3613,7 +3613,7 @@ async def eventinfo(interaction: discord.Interaction, index: int):
         return
 
     dt = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
-    desc, _, passed = compute_time_left(dt)
+    desc, _, passed = compute_time_left(now_dt, dt)
     miles = ", ".join(str(x) for x in ev.get("milestones", DEFAULT_MILESTONES))
     repeat_every = ev.get("repeat_every_days")
     repeat_note = "off"
@@ -3878,7 +3878,7 @@ async def remindall(interaction: discord.Interaction, index: Optional[int] = Non
         await interaction.edit_original_response(content="That event is currently silenced (use `/silence` to toggle it back on).")
         return
 
-    desc, _, passed = compute_time_left(dt)
+    desc, _, passed = compute_time_left(now_dt, dt)
     if passed:
         await interaction.edit_original_response(content="That event has already started or passed.")
         return
