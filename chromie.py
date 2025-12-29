@@ -2178,99 +2178,179 @@ def build_start_blast_message(guild_state: dict, *, event_name: str) -> str:
     template = random.choice(pool) if pool else "⏰ **{event}** is happening now!"
     return template.format(event=event_name)
 
+# ==========================
+# UNIFIED THEME VISUAL LAYOUTS
+# (title, subtitle, footer, color)
+# ==========================
+
+THEME_LAYOUTS = {
+    "classic": {
+        "title": "⏳ Chrono Countdown Board",
+        "subtitle": "Timelines woven in Chrono purple.",
+        "footer": "Updated every minute • Time is fake, reminders are real",
+        "color": discord.Color.from_rgb(140, 82, 255),  # Chrono purple
+    },
+    "football": {
+        "title": "🏈 Game Day Countdown Board",
+        "subtitle": "Next kickoffs on the schedule.",
+        "footer": "Updated every minute • Timeouts are imaginary",
+        "color": discord.Color.from_rgb(31, 139, 76),  # Turf green
+    },
+    "basketball": {
+        "title": "🏀 Tip-Off Countdown",
+        "subtitle": "Next tip-offs and matchups.",
+        "footer": "Updated every minute • Keep your head in the game",
+        "color": discord.Color.from_rgb(242, 140, 40),  # Court orange
+    },
+    "baseball": {
+        "title": "⚾ Diamond Dateboard",
+        "subtitle": "Upcoming first pitches and innings.",
+        "footer": "Updated every minute • No rain delays for time",
+        "color": discord.Color.from_rgb(11, 31, 91),  # Deep navy
+    },
+    "raidnight": {
+        "title": "⚔️ Raid Night Queue",
+        "subtitle": "Ready checks and pull timers ahead.",
+        "footer": "Updated every minute • Wipes build character",
+        "color": discord.Color.from_rgb(155, 93, 229),  # Neon purple
+    },
+    "dnd": {
+        "title": "🎲 Campaign Night Ledger",
+        "subtitle": "When the party gathers again.",
+        "footer": "Updated every minute • Roll initiative for punctuality",
+        "color": discord.Color.from_rgb(139, 94, 52),  # Parchment brown
+    },
+    "girly": {
+        "title": "🎀 Pretty Plans Countdown",
+        "subtitle": "Cute vibes, perfectly timed.",
+        "footer": "Updated every minute • Sparkles optional",
+        "color": discord.Color.from_rgb(255, 93, 162),  # Bubblegum pink
+    },
+    "workplace": {
+        "title": "📋 Operations Schedule",
+        "subtitle": "Upcoming key dates and deliverables.",
+        "footer": "Updated every minute • Meetings don’t wait",
+        "color": discord.Color.from_rgb(75, 85, 99),  # Slate gray
+    },
+    "celebration": {
+        "title": "🎉 Celebration Countdown",
+        "subtitle": "Big milestones and bright moments ahead.",
+        "footer": "Updated every minute • Confetti pending",
+        "color": discord.Color.from_rgb(246, 201, 69),  # Gold
+    },
+    "romance": {
+        "title": "💞 Date Night Countdown",
+        "subtitle": "Soft plans and sweet intentions.",
+        "footer": "Updated every minute • Timing is everything",
+        "color": discord.Color.from_rgb(225, 29, 72),  # Rose red
+    },
+    "vacation": {
+        "title": "🌴 Vacation Countdown Board",
+        "subtitle": "Getaway vibes incoming.",
+        "footer": "Updated every minute • Bags packed mentally",
+        "color": discord.Color.from_rgb(20, 184, 166),  # Teal
+    },
+    "hype": {
+        "title": "🚀 Hype Tracker",
+        "subtitle": "Big energy and countdown chaos.",
+        "footer": "Updated every minute • Main character timing",
+        "color": discord.Color.from_rgb(255, 61, 127),  # Hot pink
+    },
+    "minimal": {
+        "title": "▫️ Countdown Board",
+        "subtitle": "Neat, clean, and tidy timelines.",
+        "footer": "Updated every minute • Simplicity wins",
+        "color": discord.Color.from_rgb(156, 163, 175),  # Neutral gray
+    },
+    "school": {
+        "title": "📚 Study & Deadlines Board",
+        "subtitle": "Assignments, exams, and focus sessions.",
+        "footer": "Updated every minute • Start early, stress less",
+        "color": discord.Color.from_rgb(37, 99, 235),  # Study blue
+    },
+    "spooky": {
+        "title": "🎃 Spooky Season Countdowns",
+        "subtitle": "The clock creaks… the event approaches.",
+        "footer": "Updated every minute • The vibes are haunted",
+        "color": discord.Color.from_rgb(249, 115, 22),  # Pumpkin orange
+    },
+}
+
+def get_theme_layout(guild_state: dict) -> dict:
+    theme_id = (guild_state.get("theme") or "classic").lower()
+    return THEME_LAYOUTS.get(theme_id, THEME_LAYOUTS["classic"])
+
+def format_event_dt(dt: datetime) -> str:
+    # Example: January 5, 2026 • 8:30 PM CST
+    date_part = dt.strftime("%B %d, %Y")
+    time_part = dt.strftime("%I:%M %p").lstrip("0")  # removes leading 0
+    tz_part = dt.strftime("%Z")
+    if tz_part:
+        return f"{date_part} • {time_part} {tz_part}"
+    return f"{date_part} • {time_part}"
+
+def compute_dhm(target: datetime, now: datetime) -> tuple[int, int, int, bool]:
+    delta_seconds = int((target - now).total_seconds())
+    passed = delta_seconds <= 0
+    if passed:
+        delta_seconds = abs(delta_seconds)
+
+    days = delta_seconds // 86400
+    hours = (delta_seconds % 86400) // 3600
+    minutes = (delta_seconds % 3600) // 60
+    return days, hours, minutes, passed
+
+
+# ==========================
+# EMBED RENDERING
+# ==========================
+
 def build_embed_for_guild(guild_state: dict) -> discord.Embed:
-    theme_id, profile = get_theme_profile(guild_state)
-
-    seed = str(guild_state.get("event_channel_id") or "0")
-    title = pick_title(theme_id, profile, seed=seed)
-
-    # ✅ OVERRIDES (apply here)
-    title_override = guild_state.get("countdown_title_override")
-    if isinstance(title_override, str) and title_override.strip():
-        title = title_override.strip()[:256]  # Discord embed title limit
-    else:
-        title = pick_title(theme_id, profile, seed=seed)
-    embed = discord.Embed(title=title, color=profile.get("color", EMBED_COLOR))
-
-    events = guild_state.get("events", []) or []
-
-    # Pull description override once
-    desc_override = guild_state.get("countdown_description_override")
-    header = desc_override.strip() if isinstance(desc_override, str) and desc_override.strip() else ""
-
-    if not events:
-        # If they set a custom description, show it even with no events
-        if header:
-            embed.description = header[:4096]
-        else:
-            embed.description = "_No events yet. Use **/addevent** to add one._"
-        footer_text = pick_theme_footer(theme_id, profile, seed=seed)
-        embed.set_footer(text=_append_vote_footer(footer_text))
-
-        return embed
-
+    layout = get_theme_layout(guild_state)
+    sort_events(guild_state)
+    events = guild_state.get("events", [])
     now = datetime.now(DEFAULT_TZ)
-    grace = timedelta(seconds=EVENT_START_GRACE_SECONDS)
-    footer_text = pick_theme_footer(theme_id, profile, seed=seed)
-    events_sorted = sorted(
-        [ev for ev in events if isinstance(ev, dict)],
-        key=lambda ev: ev.get("timestamp", 0) if isinstance(ev.get("timestamp"), int) else 0
+
+    embed = discord.Embed(
+        title=layout["title"],
+        color=layout.get("color", EMBED_COLOR)
     )
 
-    lines: List[str] = []
-    first_upcoming_banner: Optional[str] = None
-
-    for ev in events_sorted:
-        ts = ev.get("timestamp")
-        if not isinstance(ts, int):
+    blocks = []
+    for ev in events:
+        try:
+            dt = datetime.fromtimestamp(ev["timestamp"], tz=DEFAULT_TZ)
+        except Exception:
             continue
+        delta = dt - now
+        if delta.total_seconds() < 0:
+            continue  # skip past events
+        days = delta.days
+        hours = int((delta.seconds) / 3600)
+        minutes = int((delta.seconds % 3600) / 60)
 
-        dt = datetime.fromtimestamp(ts, tz=DEFAULT_TZ)
+        name = ev.get("name", "Untitled Event")
 
-        is_live = dt <= now <= (dt + grace)
-        is_past = dt < (now - grace)
-        if is_past:
-            continue
+        lines = [
+            f"🏟️ {name}",
+            f"🕒 {days} days • {hours} hours • {minutes} minutes remaining",
+            f"📅 {dt.strftime('%B %d, %Y • %I:%M %p %Z')}",
+        ]
+        if ev.get("owner_id"):
+            lines.append(f"👤 Hosted by <@{ev['owner_id']}>")
 
-        name = (ev.get("name") or "Untitled").strip()
+        blocks.append("\n".join(lines))
 
-        if first_upcoming_banner is None and dt >= now:
-            b = ev.get("banner_url")
-            if isinstance(b, str) and b.strip():
-                first_upcoming_banner = b.strip()
-
-        emoji = pick_event_emoji(theme_id, profile, seed=f"{ts}|{name}")
-
-        tags: List[str] = []
-        repeat_every = ev.get("repeat_every_days")
-        if isinstance(repeat_every, int) and repeat_every > 0:
-            tags.append(f"🔁{repeat_every}d")
-        if ev.get("silenced"):
-            tags.append("🔕")
-
-        tag_str = ("  " + " ".join(tags)) if tags else ""
-        base = f"{emoji} **{name}** — <t:{ts}:F> • <t:{ts}:R>{tag_str}"
-        lines.append(f"🔴 {base}" if is_live else base)
-
-    body = "\n".join(lines)
-
-    # ✅ If they set a description override, treat it like a header above the list
-    if header:
-        full = f"{header}\n\n{body}"
+    if blocks:
+        body = f"{layout['subtitle']}\n\n" + "\n\n".join(blocks)
     else:
-        full = body
+        body = f"{layout['subtitle']}\n\n_No upcoming events yet._"
 
-    # Discord embed description limit = 4096 chars
-    if len(full) > 4096:
-        full = full[:4093] + "..."
-
-    embed.description = full
-
-    if first_upcoming_banner:
-        embed.set_image(url=first_upcoming_banner)
-
-    embed.set_footer(text=_append_vote_footer(footer_text))
+    embed.description = body
+    embed.set_footer(text=layout["footer"])
     return embed
+
+
 
 async def rebuild_pinned_message(guild_id: int, channel: discord.TextChannel, guild_state: dict):
     sort_events(guild_state)
@@ -3402,6 +3482,8 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
     event = {
         "name": name,
         "timestamp": int(dt.timestamp()),
+        "owner_id": interaction.user.id,
+        "owner_tag": str(interaction.user),
         "milestones": guild_state.get("default_milestones", DEFAULT_MILESTONES.copy()).copy(),
         "announced_milestones": [],
         "repeat_every_days": None,
