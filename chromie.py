@@ -2049,7 +2049,8 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
     title_override = guild_state.get("countdown_title_override")
     if isinstance(title_override, str) and title_override.strip():
         title = title_override.strip()[:256]  # Discord embed title limit
-
+    else:
+        title = pick_title(theme_id, profile, seed=seed)
     embed = discord.Embed(title=title, color=profile.get("color", EMBED_COLOR))
 
     events = guild_state.get("events", []) or []
@@ -2126,6 +2127,16 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
 
     if first_upcoming_banner:
         embed.set_image(url=first_upcoming_banner)
+        
+    desc_override = guild_state.get("countdown_description_override")
+    if isinstance(desc_override, str) and desc_override.strip():
+        # Prepend override above the event list
+        prefix = desc_override.strip()
+        if embed.description:
+            combined = prefix + "\n\n" + embed.description
+        else:
+            combined = prefix
+        embed.description = combined[:4096]  # Discord description limit
 
     embed.set_footer(text=_append_vote_footer(f"Theme: {_THEME_LABELS.get(theme_id, theme_id.title())}"))
     return embed
@@ -2479,7 +2490,6 @@ async def refresh_countdown_message(guild: discord.Guild, guild_state: dict) -> 
 # ==========================
 # AUTOCOMPLETE HELPERS
 # ==========================
-
 async def event_index_autocomplete(
     interaction: discord.Interaction,
     current: str,
@@ -2494,23 +2504,28 @@ async def event_index_autocomplete(
 
     now = datetime.now(DEFAULT_TZ)
     cur = (current or "").strip().lower()
+    grace = timedelta(seconds=EVENT_START_GRACE_SECONDS)
 
     choices: List[app_commands.Choice[int]] = []
+
     for idx, ev in enumerate(g.get("events", []), start=1):
         ts = ev.get("timestamp")
         if not isinstance(ts, int):
             continue
+
         try:
             dt = datetime.fromtimestamp(ts, tz=DEFAULT_TZ)
         except Exception:
             continue
 
-        if dt <= now:
-            continue  # should already be pruned, but safe
+        # Hide events that are effectively "past" (including grace window)
+        if dt + grace <= now:
+            continue
 
-        label = f"{idx}. {ev.get('name', 'Event')} — {dt.strftime('%m/%d/%Y %H:%M')}"
+        name = ev.get("name") or "Event"
+        label = f"{idx}. {name} — {dt.strftime('%m/%d/%Y %H:%M')}"
         label_l = label.lower()
-        name_l = (ev.get("name") or "").lower()
+        name_l = name.lower()
 
         if cur:
             if cur.isdigit():
@@ -2525,7 +2540,6 @@ async def event_index_autocomplete(
             break
 
     return choices
-
 
 # ==========================
 # BACKGROUND LOOP
@@ -3079,6 +3093,101 @@ async def digest_disable_cmd(interaction: discord.Interaction):
     save_state()
 
     await interaction.response.send_message("🛑 Weekly digest disabled.", ephemeral=True)
+
+# ==========================
+# COUNTDOWN TITLE/DESCRIPTION (Supporter perk)
+# ==========================
+
+countdown_group = app_commands.Group(name="countdown", description="Customize the pinned countdown embed")
+bot.tree.add_command(countdown_group)
+
+@countdown_group.command(name="title", description="Set a custom title for the pinned countdown embed (Supporter perk).")
+@require_vote("/countdown title")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+@app_commands.describe(text="New title (max 256 characters). Use 'default' to clear.")
+async def countdown_title_cmd(interaction: discord.Interaction, text: str):
+    guild = interaction.guild
+    assert guild is not None
+    await interaction.response.defer(ephemeral=True)
+
+    g = get_guild_state(guild.id)
+
+    raw = (text or "").strip()
+    if raw.lower() == "default":
+        g["countdown_title_override"] = None
+        save_state()
+        await refresh_countdown_message(guild, g)
+        await interaction.edit_original_response(content="✅ Countdown title reset to the theme default.")
+        return
+
+    g["countdown_title_override"] = raw[:256]
+    save_state()
+    await refresh_countdown_message(guild, g)
+    await interaction.edit_original_response(content=f"✅ Countdown title set to: **{g['countdown_title_override']}**")
+
+
+@countdown_group.command(name="cleartitle", description="Clear the custom countdown title (back to theme default).")
+@require_vote("/countdown cleartitle")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def countdown_cleartitle_cmd(interaction: discord.Interaction):
+    guild = interaction.guild
+    assert guild is not None
+    await interaction.response.defer(ephemeral=True)
+
+    g = get_guild_state(guild.id)
+    g["countdown_title_override"] = None
+    save_state()
+
+    await refresh_countdown_message(guild, g)
+    await interaction.edit_original_response(content="✅ Countdown title cleared (using theme default).")
+
+
+@countdown_group.command(name="description", description="Set a custom intro/description shown above the event list (Supporter perk).")
+@require_vote("/countdown description")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+@app_commands.describe(text="Intro text shown above the list (max 1024 recommended). Use 'clear' to remove.")
+async def countdown_description_cmd(interaction: discord.Interaction, text: str):
+    guild = interaction.guild
+    assert guild is not None
+    await interaction.response.defer(ephemeral=True)
+
+    g = get_guild_state(guild.id)
+
+    raw = (text or "").strip()
+    if raw.lower() in ("clear", "none", "off"):
+        g["countdown_description_override"] = None
+        save_state()
+        await refresh_countdown_message(guild, g)
+        await interaction.edit_original_response(content="✅ Countdown description cleared.")
+        return
+
+    # Keep it comfortably within embed limits.
+    # (Description total max is 4096; we prepend this above the list.)
+    g["countdown_description_override"] = raw[:1500]
+    save_state()
+
+    await refresh_countdown_message(guild, g)
+    await interaction.edit_original_response(content="✅ Countdown description updated.")
+
+
+@countdown_group.command(name="cleardescription", description="Clear the custom countdown description.")
+@require_vote("/countdown cleardescription")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.guild_only()
+async def countdown_cleardescription_cmd(interaction: discord.Interaction):
+    guild = interaction.guild
+    assert guild is not None
+    await interaction.response.defer(ephemeral=True)
+
+    g = get_guild_state(guild.id)
+    g["countdown_description_override"] = None
+    save_state()
+
+    await refresh_countdown_message(guild, g)
+    await interaction.edit_original_response(content="✅ Countdown description cleared.")
 
 
 @bot.tree.command(name="addevent", description="Add a new event to the countdown.")
