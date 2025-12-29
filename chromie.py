@@ -2302,7 +2302,17 @@ THEME_LAYOUTS = {
 
 def get_theme_layout(guild_state: dict) -> dict:
     theme_id = (guild_state.get("theme") or "classic").lower()
-    return THEME_LAYOUTS.get(theme_id, THEME_LAYOUTS["classic"])
+
+    # Get the theme layout or fall back to classic
+    layout = THEME_LAYOUTS.get(theme_id, THEME_LAYOUTS["classic"]).copy()
+
+    # Guarantee required keys exist
+    layout.setdefault("title", "Event Countdown")
+    layout.setdefault("description", "")
+    layout.setdefault("emoji", "🕒")
+    layout.setdefault("color", EMBED_COLOR)
+
+    return layout
 
 def format_event_dt(dt: datetime) -> str:
     # Example: January 5, 2026 • 8:30 PM CST
@@ -2337,7 +2347,7 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
 
     embed = discord.Embed(
         title=embed_title,
-        description=layout["description"],
+        description=layout.get("description", "📅 Upcoming events:"),
         color=layout["color"],
     )
 
