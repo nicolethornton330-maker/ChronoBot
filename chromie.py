@@ -2879,7 +2879,7 @@ async def update_countdowns():
             # ---- EVENT CHECKS (start blast + milestones + repeats) ----
             today = _today_local_date()
             now = datetime.now(DEFAULT_TZ)
-
+            now_dt = now
             for ev in list(guild_state.get("events", [])):
                 if ev.get("silenced", False):
                     continue
