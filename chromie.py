@@ -2204,7 +2204,9 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
             embed.description = header[:4096]
         else:
             embed.description = "_No events yet. Use **/addevent** to add one._"
-        embed.set_footer(text=_append_vote_footer(f"Theme: {_THEME_LABELS.get(theme_id, theme_id.title())}"))
+        footer_text = pick_theme_footer(theme_id, profile, seed=seed)
+        embed.set_footer(text=_append_vote_footer(footer_text))
+
         return embed
 
     now = datetime.now(DEFAULT_TZ)
