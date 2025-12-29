@@ -334,31 +334,41 @@ def calendar_days_left(dt: datetime) -> int:
     return (dt.date() - now.date()).days
 
 
-def compute_time_left(dt: datetime) -> Tuple[str, int, bool]:
-    """Return (description, days_left_floor, event_passed)."""
-    now = datetime.now(DEFAULT_TZ)
-    delta = dt - now
+def compute_time_left(now: datetime, target_dt: datetime) -> tuple[str, int, bool]:
+    """
+    Return (human_string, days_until_or_since, is_past).
+
+    Human string intentionally uses only days/hours/minutes (no seconds)
+    to keep pinned messages compact.
+    """
+    delta = target_dt - now
     total_seconds = int(delta.total_seconds())
+    is_past = total_seconds < 0
 
-    if total_seconds <= 0:
-        return "The event is happening now or has already started! 💕", 0, True
+    total_seconds_abs = abs(total_seconds)
 
-    days, rem = divmod(total_seconds, 86400)
+    # Special-case: less than a minute
+    if total_seconds_abs < 60:
+        desc = "less than 1 minute"
+        days = 0
+        return (f"Happened {desc} ago", days, True) if is_past else (desc, days, False)
+
+    days, rem = divmod(total_seconds_abs, 86400)
     hours, rem = divmod(rem, 3600)
-    minutes, seconds = divmod(rem, 60)
+    minutes, _ = divmod(rem, 60)
 
-    parts = []
+    parts: list[str] = []
     if days:
         parts.append(f"{days} day{'s' if days != 1 else ''}")
-    if hours:
+    if hours or days:
         parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
-    if minutes:
-        parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
-    if not parts:
-        parts.append(f"{seconds} second{'s' if seconds != 1 else ''}")
+    # Always show minutes once we're above 1 minute
+    parts.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
 
-    return " • ".join(parts), days, False
-
+    desc = " • ".join(parts)
+    if is_past:
+        return f"Happened {desc} ago", days, True
+    return desc, days, False
 
 def parse_milestones(text: str) -> Optional[List[int]]:
     """
