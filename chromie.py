@@ -2330,10 +2330,7 @@ def compute_dhm(target: datetime, now: datetime) -> tuple[int, int, int, bool]:
 # ==========================
 
 def build_embed_for_guild(guild_state: dict) -> discord.Embed:
-    layout = get_theme_layout(
-        guild_state.get("countdown_theme") or "classic",
-        guild_state.get("custom_theme") or {},
-    )
+    layout = get_theme_layout(guild_state)
 
     override_title = (guild_state.get("countdown_title_override") or "").strip()
     embed_title = override_title[:256] if override_title else layout.get("title", "Event Countdown")
@@ -2343,7 +2340,6 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
         description=layout["description"],
         color=layout["color"],
     )
-
 
     emoji = layout.get("emoji", "🕒")
     blocks = []
