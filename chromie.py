@@ -1500,44 +1500,41 @@ async def get_or_create_pinned_message(
     # ✅ NEW: Recovery — reuse an existing bot-authored pinned message in this channel
     # This prevents “pin spam” when pinned_message_id gets lost/reset.
     # =========================
-if not pinned_id:
-    if not perms.read_message_history:
-        # If we can’t read history, we can’t list pins to recover.
-        if allow_create:
+    if not pinned_id:
+        if not perms.read_message_history:
+            if allow_create:
+                missing = missing_channel_perms(channel, channel.guild)
+                await notify_owner_missing_perms(
+                    channel.guild,
+                    channel,
+                    missing=missing,
+                    action="read message history to find and reuse the existing pinned countdown message",
+                )
+            return None
+
+        try:
+            pins = [m async for m in channel.pins()]
+
+            # Prefer the most recent pinned message authored by the bot
+            bot_pins = [m for m in pins if m.author and m.author.id == bot_member.id]
+            if bot_pins:
+                m = max(bot_pins, key=lambda x: x.created_at)
+                guild_state["pinned_message_id"] = m.id
+                save_state()
+                await ensure_countdown_pinned(channel.guild, channel, m, perms=perms)
+                return m
+
+        except discord.Forbidden:
             missing = missing_channel_perms(channel, channel.guild)
             await notify_owner_missing_perms(
                 channel.guild,
                 channel,
                 missing=missing,
-                action="read message history to find and reuse the existing pinned countdown message",
+                action="access pinned messages to reuse the existing countdown pin",
             )
-        return None
-
-    try:
-        pins = [m async for m in channel.pins()]
-
-        # Prefer the most recent pinned message authored by the bot
-        bot_pins = [m for m in pins if m.author and m.author.id == bot_member.id]
-        if bot_pins:
-            m = max(bot_pins, key=lambda x: x.created_at)
-            guild_state["pinned_message_id"] = m.id
-            save_state()
-            await ensure_countdown_pinned(channel.guild, channel, m, perms=perms)
-            return m
-
-    except discord.Forbidden:
-        missing = missing_channel_perms(channel, channel.guild)
-        await notify_owner_missing_perms(
-            channel.guild,
-            channel,
-            missing=missing,
-            action="access pinned messages to reuse the existing countdown pin",
-        )
-        return None
-    except discord.HTTPException:
-        # transient; let the loop try again later
-        return None
-
+            return None
+        except discord.HTTPException:
+            return None
 
     # =========================
     # 2) Create only if we truly have nothing to reuse
