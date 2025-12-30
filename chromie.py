@@ -929,123 +929,165 @@ def _append_vote_footer(existing: Optional[str]) -> str:
         return tail
     return f"{existing} • {tail}"
     
-def build_chronohelp_embed() -> discord.Embed:
-    e = discord.Embed(
-        title="Chromie Help 🕒✨",
-        description=(
-            "Chromie pins a clean countdown list and posts reminders in your configured event channel.\n"
-            "**Tip:** Use `/listevents` (or autocomplete) to grab the right `index:` fast.\n"
-            "**Note:** Event + banner changes usually show up immediately. Theme changes may require "
-            "`/update_countdown` (or wait for the next auto-refresh) unless your build has the instant theme refresh fix."
+# ---------------------------
+# HELP PAGES (short + scannable)
+# ---------------------------
+
+HELP_PAGES = {
+    "quick": {
+        "title": "Chromie Help 🕒✨",
+        "desc": (
+            "**Quick start:**\n"
+            "1) In your events channel: `/seteventchannel`\n"
+            "2) Add one: `/addevent`\n"
+            "3) Chromie keeps the pinned countdown updated.\n\n"
+            "Use the dropdown to browse commands by category."
         ),
+        "lines": [
+            "`/seteventchannel` — set the pinned countdown channel",
+            "`/addevent` — add an event",
+            "`/listevents` — list events + index numbers",
+            "`/update_countdown` — force refresh (troubleshooting)",
+        ],
+    },
+    "events": {
+        "title": "Events",
+        "desc": "Create, view, edit, and organize events.",
+        "lines": [
+            "`/addevent` — add an event",
+            "`/listevents` — list all events",
+            "`/nextevent` — show next upcoming event",
+            "`/eventinfo index:` — details for one event",
+            "`/editevent index:` — edit name/date/time",
+            "`/dupeevent index:` — duplicate an event",
+            "`/removeevent index:` — delete an event",
+        ],
+    },
+    "reminders": {
+        "title": "Reminders",
+        "desc": "Milestones + manual reminders + repeating reminders.",
+        "lines": [
+            "`/remindall index:` — post a reminder now",
+            "`/setmilestones index: milestones:` — custom milestone days",
+            "`/resetmilestones index:` — restore default milestones",
+            "`/silence index:` — stop reminders for an event",
+            "`/setrepeat index: every_days:` — repeat reminders",
+            "`/clearrepeat index:` — turn repeat off",
+        ],
+    },
+    "customize": {
+        "title": "Customization",
+        "desc": "Make the pinned countdown match your server vibe.",
+        "lines": [
+            "`/theme` — change the countdown theme",
+            "`/banner set` — set a banner image",
+            "`/banner clear` — remove the banner",
+            "`/countdown title` — set pinned title (supporter-only if enabled)",
+            "`/countdown description` — set pinned description (supporter-only if enabled)",
+        ],
+    },
+    "owner": {
+        "title": "Owner DMs",
+        "desc": "Assign an owner to an event.",
+        "lines": [
+            "`/seteventowner index: user:` — assign owner",
+            "`/cleareventowner index:` — remove owner",
+        ],
+    },
+    "supporter": {
+        "title": "Supporter (Top.gg Vote)",
+        "desc": "Vote perks + diagnostics.",
+        "lines": [
+            "`/vote` — check supporter status + link",
+            "`/vote_debug` — admin vote verification debug",
+        ],
+    },
+    "maintenance": {
+        "title": "Maintenance",
+        "desc": "Config resets + cleanup + diagnostics.",
+        "lines": [
+            "`/healthcheck` — check permissions/config",
+            "`/resendsetup` — resend onboarding",
+            "`/resetchannel` — clear event channel",
+            "`/purgeevents confirm: YES` — delete all events",
+            "`/archivepast` — manual cleanup (rare)",
+        ],
+    },
+    "dm": {
+        "title": "DM Control",
+        "desc": "Add events from DMs after linking a server.",
+        "lines": [
+            "`/linkserver` — link your DMs to this server",
+            "Then DM: `/addevent` — adds to your linked server",
+        ],
+    },
+}
+
+HELP_OPTIONS = [
+    ("Quick Start", "quick", "Start here"),
+    ("Events", "events", "Add/edit/list"),
+    ("Reminders", "reminders", "Milestones & repeats"),
+    ("Customization", "customize", "Themes & banners"),
+    ("Owner DMs", "owner", "Assign event owner"),
+    ("Supporter", "supporter", "Vote perks"),
+    ("Maintenance", "maintenance", "Healthcheck & resets"),
+    ("DM Control", "dm", "Link + DM add"),
+]
+
+
+def build_help_embed(page_key: str) -> discord.Embed:
+    page = HELP_PAGES.get(page_key, HELP_PAGES["quick"])
+    e = discord.Embed(
+        title=page["title"],
+        description=page["desc"],
         color=EMBED_COLOR,
     )
 
     e.add_field(
-        name="Setup",
-        value=(
-            "• `/seteventchannel` — choose where the pinned countdown lives\n"
-            "• `/addevent` — add an event (MM/DD/YYYY + 24-hour HH:MM)\n"
-            "• `/healthcheck` — verify permissions + configuration"
-        ),
+        name="Commands",
+        value="\n".join(page["lines"]),
         inline=False,
     )
 
-    e.add_field(
-        name="Browse",
-        value=(
-            "• `/listevents` — list events (with index numbers)\n"
-            "• `/nextevent` — show the next upcoming event\n"
-            "• `/eventinfo index:` — details for one event"
-        ),
-        inline=False,
-    )
-
-    e.add_field(
-        name="Edit & organize",
-        value=(
-            "• `/editevent index:` — edit name/date/time\n"
-            "• `/dupeevent index: date:` — duplicate an event (optional time/name)\n"
-            "• `/removeevent index:` — delete an event"
-        ),
-        inline=False,
-    )
-
-    e.add_field(
-        name="Reminders",
-        value=(
-            "• `/remindall` — manually post a reminder (admin)\n"
-            "• `/setmilestones index: milestones:` — custom milestone days\n"
-            "• `/resetmilestones index:` — restore default milestones\n"
-            "• `/silence index:` — stop reminders for an event (keeps it listed)\n"
-            "• `/setrepeat index: every_days:` — repeating reminders (daily/weekly/etc.)\n"
-            "• `/clearrepeat index:` — turn repeating reminders off"
-        ),
-        inline=False,
-    )
-
-    e.add_field(
-        name="Customization",
-        value=(
-            "• `/banner set` — add a banner image (shown on the pinned embed)\n"
-            "• `/banner clear` — remove the banner\n"
-            "• `/theme` — change the look of the pinned countdown (some themes may be supporter-only)\n"
-            "• `/update_countdown` — force-refresh the pinned countdown (useful after theme changes)"
-        ),
-        inline=False,
-    )
-
-    e.add_field(
-        name="Owner DMs",
-        value=(
-            "• `/seteventowner index: user:` — assign an owner (they get milestone/repeat DMs)\n"
-            "• `/cleareventowner index:` — remove the owner"
-        ),
-        inline=False,
-    )
-
-    e.add_field(
-        name="Supporter perks (vote unlocks 💜)",
-        value=(
-            "• `/vote` — check status + get the vote link\n"
-            "• `/theme` — supporter-only themes (if enabled)\n"
-            "• `/milestones advanced` — set server-wide default milestones (optionally apply to all events)\n"
-            "• `/template save` + `/template load` — reuse event settings\n"
-            "• `/digest enable` / `/digest disable` — weekly Monday “next 7 days” summary"
-        ),
-        inline=False,
-    )
-
-    e.add_field(
-        name="Maintenance",
-        value=(
-            "• Past events auto-delete after they pass ✅\n"
-            "• `/archivepast` — manual cleanup (rare now)\n"
-            "• `/resetchannel` — clear configured countdown channel\n"
-            "• `/purgeevents confirm: YES` — delete all events for this server\n"
-            "• `/resendsetup` — resend the onboarding message"
-        ),
-        inline=False,
-    )
-
+    # Keep links out of the main text so it stays readable
     links = []
-    if SUPPORT_SERVER_URL:
-        links.append(f"• Support Discord — {SUPPORT_SERVER_URL}")
     if FAQ_URL:
-        links.append(f"• Chromie FAQ — {FAQ_URL}")
-    extra = ("\n" + "\n".join(links)) if links else ""
-
-    e.add_field(
-        name="Optional: DM control",
-        value=(
-            "• `/linkserver` — link your DMs to this server (Manage Server required)\n"
-            "• Then DM me `/addevent` to add events remotely"
-            + extra
-        ),
-        inline=False,
-    )
+        links.append(f"FAQ: {FAQ_URL}")
+    if SUPPORT_SERVER_URL:
+        links.append(f"Support: {SUPPORT_SERVER_URL}")
+    if links:
+        e.set_footer(text=" • ".join(links))
 
     return e
+
+
+class HelpSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label=label, value=value, description=desc)
+            for (label, value, desc) in HELP_OPTIONS
+        ]
+        super().__init__(
+            placeholder="Pick a help category…",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        key = self.values[0]
+        await interaction.response.edit_message(embed=build_help_embed(key), view=self.view)
+
+
+class HelpView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=180)
+        self.add_item(HelpSelect())
+
+
+# Backwards-compatible wrapper (optional)
+def build_chronohelp_embed() -> discord.Embed:
+    return build_help_embed("quick")
 
 
 def chunk_text(text: str, limit: int = 1900) -> list[str]:
@@ -4780,10 +4822,14 @@ async def theme_cmd(interaction: discord.Interaction, theme: str):
     await interaction.edit_original_response(content=f"Theme set to **{_THEME_LABELS.get(theme_id, theme_id.title())}**.")
 
 
-@bot.tree.command(name="chronohelp", description="Show ChronoBot setup & command help.")
+@bot.tree.command(name="chronohelp", description="Show Chromie help (paged).")
 async def chronohelp(interaction: discord.Interaction):
-    embed = build_chronohelp_embed()
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(
+        embed=build_help_embed("quick"),
+        view=HelpView(),
+        ephemeral=True,
+    )
+
 
 
 # ==========================
