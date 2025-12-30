@@ -2449,7 +2449,21 @@ def build_embed_for_guild(guild_state: dict) -> discord.Embed:
     )
 
     emoji = layout.get("emoji", "🕒")
-    subtitle = layout.get("subtitle", layout.get("description", "📅 Upcoming events:"))
+
+    # Theme-provided subtitle/heading (fallback)
+    theme_subtitle = layout.get("subtitle", layout.get("description", "📅 Upcoming events:"))
+
+    # NEW: Supporter custom intro shown above the list
+    custom_intro = (guild_state.get("countdown_description_override") or "").strip()
+
+    # Build the header area (intro first, then the theme subtitle)
+    header_lines = []
+    if custom_intro:
+        header_lines.append(custom_intro)
+    if theme_subtitle:
+        header_lines.append(theme_subtitle)
+
+    header = "\n".join(header_lines).strip() or "📅 Upcoming events:"
     footer = layout.get("footer", "")
 
     blocks = []
