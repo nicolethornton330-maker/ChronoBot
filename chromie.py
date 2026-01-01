@@ -3138,25 +3138,22 @@ async def update_countdowns():
                             else:
                                 mention_prefix, allowed = build_milestone_mention(channel, guild_state)
 
-                            text = mention_prefix + build_start_blast_message(guild_state, event_name=ev.get("name", "Event"))
+                            text = mention_prefix + build_start_blast_message(
+                                guild_state,
+                                event_name=ev.get("name", "Event")
+                            )
 
                             try:
-                                m = await channel.send(
-                                    text,
-                                    allowed_mentions=allowed,
-                                )
+                                m = await channel.send(text, allowed_mentions=allowed)
 
-                                # ✅ track for cleanup 24h after event passes
+                                # track for cleanup 24h after event passes
                                 ev.setdefault("reminder_messages", []).append(
                                     {"channel_id": channel.id, "message_id": m.id}
                                 )
 
-                                # mutate state
-                                sent_dates.append(today.isoformat())
-                                ev["announced_repeat_dates"] = sent_dates[-180:]
+                                # ✅ stop re-sending every loop
+                                ev["start_announced"] = True
                                 mark_dirty()
-
-                                # ✅ optional: flush immediately after a public send
                                 flush_if_dirty()
 
                             except discord.Forbidden:
