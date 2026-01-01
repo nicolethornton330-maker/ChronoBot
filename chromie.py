@@ -30,7 +30,7 @@ MILESTONE_CLEANUP_AFTER_EVENT_SECONDS = 86400  # 24 hours
 DATA_FILE = Path(os.getenv("CHROMIE_DATA_PATH", "/var/data/chromie_state.json"))
 TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
 
-FAQ_URL = "https://nicolethornton330-maker.github.io/chronobot-faq/"
+FAQ_URL = "https://gingeraffee.github.io/chronobot-faq/"
 SUPPORT_SERVER_URL = os.getenv("CHROMIE_SUPPORT_SERVER_URL", "").strip()  # set in Render/hosting env
 
 EMBED_COLOR = discord.Color.from_rgb(140, 82, 255)  # ChronoBot purple
