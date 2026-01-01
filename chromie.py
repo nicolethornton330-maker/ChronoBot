@@ -25,6 +25,7 @@ VERSION = "2025-12-29"
 DEFAULT_TZ = ZoneInfo("America/Chicago")
 UPDATE_INTERVAL_SECONDS = 60
 DEFAULT_MILESTONES = [100, 60, 30, 14, 7, 2, 1, 0]
+MILESTONE_CLEANUP_AFTER_EVENT_SECONDS = 86400  # 24 hours
 
 DATA_FILE = Path(os.getenv("CHROMIE_DATA_PATH", "/var/data/chromie_state.json"))
 TOKEN = os.getenv("DISCORD_BOT_TOKEN", "").strip()
@@ -422,7 +423,7 @@ def prune_past_events(guild_state: dict, now: Optional[datetime] = None) -> int:
 
     for ev in events:
         ts = ev.get("timestamp")
-        if not isinstance(ts, int):
+        if not isinstance(ts, (int, float)):
             kept.append(ev)
             continue
 
@@ -446,6 +447,42 @@ def prune_past_events(guild_state: dict, now: Optional[datetime] = None) -> int:
         sort_events(guild_state)
 
     return removed
+async def cleanup_milestones_if_due(guild_state: dict, ev: dict):
+    # Backward compatible defaults
+    ev.setdefault("milestone_messages", [])
+    ev.setdefault("milestones_cleaned", False)
+
+    if ev["milestones_cleaned"]:
+        return
+
+    now_ts = int(time.time())
+    delete_after = int(ev.get("timestamp", 0)) + MILESTONE_CLEANUP_AFTER_EVENT_SECONDS
+
+    # Not due yet
+    if now_ts < delete_after:
+        return
+
+    msgs = ev.get("milestone_messages", [])
+    if not msgs:
+        ev["milestones_cleaned"] = True
+        save_state()
+        return
+
+    for item in msgs:
+        ch = bot.get_channel(int(item.get("channel_id", 0)))
+        mid = int(item.get("message_id", 0))
+        if not isinstance(ch, discord.TextChannel) or mid <= 0:
+            continue
+
+        try:
+            await ch.get_partial_message(mid).delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            # If it can't be deleted, don't loop forever.
+            pass
+
+    ev["milestone_messages"] = []
+    ev["milestones_cleaned"] = True
+    save_state()
 
 # ==========================
 # DISCORD SETUP
@@ -2376,12 +2413,6 @@ THEME_LAYOUTS = {
 }
 
 def get_theme_layout(guild_state: dict, theme_id: Optional[str] = None) -> dict:
-    # Support older call sites that passed (theme_id, guild_state)
-    # If someone accidentally passes guild_state as the 2nd arg, this still behaves.
-    if theme_id and isinstance(theme_id, dict):
-        # called as get_theme_layout(theme_id_dict??) - just fall back
-        theme_id = None
-
     tid = (theme_id or guild_state.get("theme") or "classic")
     tid = str(tid).lower()
 
@@ -2887,7 +2918,7 @@ async def event_index_autocomplete(
 
     for idx, ev in enumerate(g.get("events", []), start=1):
         ts = ev.get("timestamp")
-        if not isinstance(ts, int):
+        if not isinstance(ts, (int, float)):
             continue
 
         try:
@@ -3025,14 +3056,74 @@ async def update_countdowns():
                     continue
 
                 ts = ev.get("timestamp")
-                if not isinstance(ts, int):
+                if not isinstance(ts, (int, float)):
                     continue
 
                 try:
                     dt = datetime.fromtimestamp(ts, tz=DEFAULT_TZ)
                 except Exception:
                     continue
+                # ----------------------------
+                # ✅ Reminder tracking defaults + post-event cleanup (24h)
+                # ----------------------------
+                ev.setdefault("reminder_messages", [])      # [{channel_id, message_id}, ...]
+                ev.setdefault("reminders_cleaned", False)  # guard
 
+                # Harden types (older saved states)
+                if not isinstance(ev.get("reminder_messages"), list):
+                    ev["reminder_messages"] = []
+                    mark_dirty()
+
+                # If event passed AND it's been 24h, delete all stored reminder messages
+                if (not ev.get("reminders_cleaned", False)) and (now_dt >= (dt + timedelta(seconds=MILESTONE_CLEANUP_AFTER_EVENT_SECONDS))):
+                    msgs = ev.get("reminder_messages", []) or []
+                    if msgs:
+                        had_forbidden = False
+
+                        for item in msgs:
+                            try:
+                                ch_id = int(item.get("channel_id") or channel.id)
+                                msg_id = int(item.get("message_id") or 0)
+                            except Exception:
+                                continue
+
+                            if msg_id <= 0:
+                                continue
+
+                            ch = await get_text_channel(ch_id)
+                            if ch is None:
+                                continue
+
+                            try:
+                                await ch.get_partial_message(msg_id).delete()
+                            except discord.Forbidden:
+                                had_forbidden = True
+                                # Don’t spam attempts forever; notify once then stop trying.
+                                try:
+                                    missing = missing_channel_perms(ch, ch.guild)
+                                    await notify_owner_missing_perms(
+                                        ch.guild,
+                                        ch,
+                                        missing=missing,
+                                        action="delete old milestone/repeat reminder messages (needs Manage Messages)",
+                                    )
+                                except Exception:
+                                    pass
+                                break
+                            except (discord.NotFound, discord.HTTPException):
+                                pass  # already gone or transient
+
+                        # Whether we deleted them or couldn't, we stop trying after this cleanup window
+                        ev["reminder_messages"] = []
+                        ev["reminders_cleaned"] = True
+                        mark_dirty()
+                        flush_if_dirty()
+
+                    else:
+                        ev["reminders_cleaned"] = True
+                        mark_dirty()
+                        flush_if_dirty()
+                        
                 # ---- EVENT START BLAST (time-of-event) ----
                 if dt <= now:
                     if not bool(ev.get("start_announced", False)):
@@ -3050,13 +3141,22 @@ async def update_countdowns():
                             text = mention_prefix + build_start_blast_message(guild_state, event_name=ev.get("name", "Event"))
 
                             try:
-                                await channel.send(text, allowed_mentions=allowed)
+                                m = await channel.send(
+                                    text,
+                                    allowed_mentions=allowed,
+                                )
+
+                                # ✅ track for cleanup 24h after event passes
+                                ev.setdefault("reminder_messages", []).append(
+                                    {"channel_id": channel.id, "message_id": m.id}
+                                )
 
                                 # mutate state
-                                ev["start_announced"] = True
+                                sent_dates.append(today.isoformat())
+                                ev["announced_repeat_dates"] = sent_dates[-180:]
                                 mark_dirty()
 
-                                # ✅ optional but recommended: flush immediately after a public send
+                                # ✅ optional: flush immediately after a public send
                                 flush_if_dirty()
 
                             except discord.Forbidden:
@@ -3108,7 +3208,12 @@ async def update_countdowns():
                     text = f"{mention_prefix}{body}"
 
                     try:
-                        await channel.send(text, allowed_mentions=allowed_mentions)
+                        m = await channel.send(text, allowed_mentions=allowed_mentions)
+
+                        # ✅ track for cleanup 24h after event passes
+                        ev.setdefault("reminder_messages", []).append(
+                            {"channel_id": channel.id, "message_id": m.id}
+                        )
 
                         # mutate state
                         announced.append(days_left)
@@ -3166,9 +3271,14 @@ async def update_countdowns():
                                     time_left=desc,
                                     date_str=date_str,
                                 )
-                                await channel.send(
+                                m = await channel.send(
                                     text,
                                     allowed_mentions=discord.AllowedMentions.none(),
+                                )
+
+                                # ✅ track for cleanup 24h after event passes
+                                ev.setdefault("reminder_messages", []).append(
+                                    {"channel_id": channel.id, "message_id": m.id}
                                 )
 
                                 # mutate state
@@ -3201,7 +3311,10 @@ async def update_countdowns():
                                 pass
 
             # ---- Prune after processing (so start blast can happen) ----
-            removed = prune_past_events(guild_state, now=datetime.now(DEFAULT_TZ))
+            removed = prune_past_events(
+                guild_state,
+                now=datetime.now(DEFAULT_TZ) - timedelta(seconds=MILESTONE_CLEANUP_AFTER_EVENT_SECONDS),
+            )
             if removed:
                 mark_dirty()
                 # (No immediate flush needed; no public post happened.)
@@ -3321,7 +3434,7 @@ def format_events_list(guild_state: dict) -> str:
     lines = []
     for idx, ev in enumerate(events, start=1):
         ts = ev.get("timestamp")
-        if not isinstance(ts, int):
+        if not isinstance(ts, (int, float)):
             continue
 
         dt = datetime.fromtimestamp(ts, tz=DEFAULT_TZ)
@@ -3679,6 +3792,8 @@ async def addevent(interaction: discord.Interaction, date: str, time: str, name:
         "owner_tag": str(interaction.user),
         "milestones": guild_state.get("default_milestones", DEFAULT_MILESTONES.copy()).copy(),
         "announced_milestones": [],
+        "milestone_messages": [],     # ✅ store messages we sent
+        "milestones_cleaned": False,  # ✅ prevents repeat attempts
         "repeat_every_days": None,
         "repeat_anchor_date": None,
         "announced_repeat_dates": [],
