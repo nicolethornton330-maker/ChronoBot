@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from typing import Optional, List, Tuple, Dict, Any
 import time
 import discord
+from discord.errors import NotFound, HTTPException
 from discord.ext import commands, tasks
 from discord import app_commands
 from threading import Lock
@@ -129,19 +130,24 @@ async def topgg_has_voted(user_id: int, *, force: bool = False) -> bool:
     _vote_cache[user_id] = (now, voted)
     return voted
 
-async def send_vote_required(interaction: discord.Interaction, feature_label: str) -> None:
+async def send_vote_required(interaction: discord.Interaction, feature_label: str):
     content = (
-        f"🔒 **{feature_label}** is a supporter perk.\n\n"
-        f"{PREMIUM_PERKS_TEXT}\n\n"
-        "Vote on Top.gg, then run the command again 💜"
+        f"🗳️ **Vote required** to use **{feature_label}**.\n"
+        "Vote on Top.gg, then try again!"
     )
-    view = build_vote_view()
+    view = build_vote_view()  # whatever you already use
 
-    # Checks run before the command executes, so normally response isn't done yet.
-    if interaction.response.is_done():
-        await interaction.followup.send(content, ephemeral=True, view=view)
-    else:
-        await interaction.response.send_message(content, ephemeral=True, view=view)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(content, ephemeral=True, view=view)
+        else:
+            await interaction.response.send_message(content, ephemeral=True, view=view)
+    except NotFound:
+        # Interaction expired (10062). Nothing we can do at this point.
+        return
+    except HTTPException:
+        # Any transient Discord API issue; don't explode your command task.
+        return
 
 def require_vote(feature_label: str):
     async def predicate(interaction: discord.Interaction) -> bool:
@@ -2694,7 +2700,7 @@ async def get_or_create_pinned_message(
     # -------------------------
     if not pinned_id and perms.read_message_history:
         try:
-            pins = [m async for m in channel.pins()]
+            pins = await channel.pins()
             bot_pins = [m for m in pins if m.author and m.author.id == bot_member.id]
             if bot_pins:
                 m = max(bot_pins, key=lambda x: x.created_at)
