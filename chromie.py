@@ -63,6 +63,26 @@ _vote_cache: Dict[int, Tuple[float, bool]] = {}  # user_id -> (cached_at_monoton
 VOTE_CACHE_TTL_SECONDS = 60  # keep short so votes register quickly
 _vote_ask_cooldown: Dict[int, float] = {}  # user_id -> last ask epoch
 VOTE_ASK_COOLDOWN_SECONDS = 60 * 60 * 24  # 24h
+SUPPORTER_SPEND_WINDOW_SECONDS = 60 * 60 * 12  # 12h: one supporter action per vote
+
+def _supporter_vote_spent_map() -> dict:
+    # Stored at state["supporter"]["vote_spent_at"]
+    return state.setdefault("supporter", {}).setdefault("vote_spent_at", {})
+
+def supporter_vote_spent_recently(user_id: int) -> bool:
+    spent_map = _supporter_vote_spent_map()
+    ts = spent_map.get(str(user_id))
+    if not ts:
+        return False
+    try:
+        return (time.time() - float(ts)) < SUPPORTER_SPEND_WINDOW_SECONDS
+    except Exception:
+        return False
+
+def mark_supporter_vote_spent(user_id: int) -> None:
+    spent_map = _supporter_vote_spent_map()
+    spent_map[str(user_id)] = float(time.time())
+    save_state()
 
 async def maybe_vote_nudge(interaction: discord.Interaction, reason: str) -> None:
     # Only nudge if they haven't voted
@@ -151,11 +171,16 @@ async def send_vote_required(interaction: discord.Interaction, feature_label: st
 
 def require_vote(feature_label: str):
     async def predicate(interaction: discord.Interaction) -> bool:
+        user_id = interaction.user.id
+        if supporter_vote_spent_recently(user_id):
+            await send_vote_required(interaction, feature_label)
+            raise VoteRequired()
         voted = await topgg_has_voted(interaction.user.id)
         if not voted:
             voted = await topgg_has_voted(interaction.user.id, force=True)
 
         if voted:
+            mark_supporter_vote_spent(user_id)
             return True
 
         await send_vote_required(interaction, feature_label)
@@ -242,6 +267,8 @@ def load_state() -> dict:
 
     data.setdefault("guilds", {})
     data.setdefault("user_links", {})
+    data.setdefault("supporter", {})
+    data["supporter"].setdefault("vote_spent_at", {})  # user_id_str -> epoch seconds
     return data
 
 
@@ -3384,7 +3411,15 @@ async def _safe_ephemeral(interaction: discord.Interaction, content: str):
 @bot.tree.command(name="vote", description="Vote for Chromie on Top.gg to unlock supporter perks.")
 async def vote_cmd(interaction: discord.Interaction):
     voted = await topgg_has_voted(interaction.user.id, force=True)
-    status = "✅ You currently have supporter access." if voted else "❌ You don’t have an active vote yet."
+    spent = supporter_vote_spent_recently(interaction.user.id)
+
+    if voted and not spent:
+        status = "✅ Active vote detected. You can use **one** supporter perk now."
+    elif voted and spent:
+        status = "✅ Active vote detected, but you’ve already used this vote for a supporter perk. Vote again when available."
+    else:
+        status = "❌ You don’t have an active vote yet."
+
 
     await interaction.response.send_message(
         f"{status}\n\n{PREMIUM_PERKS_TEXT}",
@@ -4954,12 +4989,19 @@ async def theme_cmd(interaction: discord.Interaction, theme: str):
         await interaction.edit_original_response(content=f"Unknown theme: `{theme}`. Available: {choices}")
         return
 
-    # Classic is always allowed; supporter themes require an active /vote by the caller.
+    # Classic is always allowed; supporter themes require an active vote AND spend it.
     if THEMES[theme_id].get("supporter_only"):
+        if supporter_vote_spent_recently(interaction.user.id):
+            await send_vote_required(interaction, feature_label=f"`{theme_id}` theme")
+            return
+
         voted = await topgg_has_voted(interaction.user.id, force=True)
         if not voted:
             await send_vote_required(interaction, feature_label=f"`{theme_id}` theme")
             return
+
+        mark_supporter_vote_spent(interaction.user.id)
+
 
     g = get_guild_state(guild.id)
     g["theme"] = theme_id
